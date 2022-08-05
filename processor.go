@@ -1,34 +1,24 @@
 package cache
 
-import (
-	"time"
-)
+import "time"
 
-const (
-	getList  = "getList"
-	getStats = "getStats"
-)
-
-// req is our request (input channel).
+// req is our request (input channel data).
 type req struct {
 	key  string
-	del  bool
-	get  bool
-	data any
-	time time.Time
+	get  bool // get request.
+	stat bool // return stats.
+	list bool // return cache.
+	data any  // input data for a save op.
 	opts *Options
 }
 
-// res is our response (output channel).
-type res struct {
-	item   *Item
-	exists bool
-}
-
 func (c *Cache) start() {
-	c.cache = make(map[string]*Item)
+	if c.cache == nil {
+		c.cache = make(map[string]*Item)
+	}
+
 	c.req = make(chan *req)
-	c.res = make(chan *res)
+	c.res = make(chan *Item)
 
 	go c.processRequests()
 }
@@ -40,9 +30,10 @@ func (c *Cache) stop() {
 	c.res = nil
 }
 
-// clean it up.
+// clean it up and free some memory.
 func (c *Cache) clean() {
 	for k := range c.cache {
+		c.cache[k].opts = nil
 		c.cache[k].Data = nil
 		c.cache[k] = nil
 		delete(c.cache, k)
@@ -51,94 +42,124 @@ func (c *Cache) clean() {
 	c.cache = nil
 }
 
-// processRequests is the main running go routine for the cache.
+// processRequests readies and starts the main go routine for the cache.
 func (c *Cache) processRequests() {
 	defer close(c.res) // close response channel when request channel closes.
 
+	pruner := &time.Ticker{}
 	if c.conf.PruneInterval > 0 {
-		ticker := c.pruneRequests() // in prune.go
-		defer ticker.Stop()
+		pruner = time.NewTicker(c.conf.PruneInterval)
+		defer pruner.Stop()
 	}
 
-	for req := range c.req {
-		switch {
-		case req.key == getStats && !req.get:
-			c.res <- c.getStats() // in stats.go
-		case req.key == getList && !req.get:
-			c.res <- c.list()
-		case req.del && !req.time.IsZero():
-			c.res <- c.pruneItems(req.time) // in prune.go
-			c.stats.pruneTm += time.Since(req.time)
-		case req.data != nil:
-			c.res <- c.save(req)
-		case req.del:
-			c.res <- c.delete(req.key)
-		default:
-			c.res <- c.get(req.key)
+	timer := time.NewTicker(c.conf.RequestAccuracy)
+	defer timer.Stop()
+
+	// this only returns when Stop() is called.
+	c.processor(time.Now(), pruner, timer)
+}
+
+// processor is the single go routine in this module for request processing.
+//nolint:cyclop // processor has to be "complicated" to do the job.
+func (c *Cache) processor(now time.Time, pruner, timer *time.Ticker) {
+	for {
+		select {
+		case now = <-pruner.C: // usually a few minutes (ticker).
+			c.prune(&now)
+			c.stats.Pruning.Duration += time.Since(now)
+		case now = <-timer.C: // should be less than 5 seconds.
+			// Update now with a ticker to avoid slow time.Now() calls during request processing.
+		case req, ok := <-c.req:
+			switch {
+			case !ok:
+				return
+			case req.get:
+				c.res <- c.get(req.key, now)
+			case req.data != nil:
+				c.res <- c.save(req, now)
+			case req.list:
+				c.res <- c.list()
+			case req.stat:
+				c.res <- &Item{Data: c.stats, Hits: int64(len(c.cache))}
+			default:
+				c.res <- c.delete(req.key)
+			}
 		}
 	}
 }
 
-func (c *Cache) save(req *req) *res {
-	_, exists := c.cache[req.key]
-	if exists {
-		c.stats.updated++
-	} else {
-		c.stats.saved++
+// prune (optionally) runs at an interval inside tha main thread.
+func (c *Cache) prune(from *time.Time) {
+	c.stats.Prunes++
+
+	for key, item := range c.cache {
+		if last := from.Sub(item.Last); last > c.conf.MaxUnused ||
+			(item.opts.Prune && last > c.conf.PruneAfter) ||
+			from.After(item.opts.Expire) {
+			delete(c.cache, key)
+			c.stats.Pruned++
+		}
 	}
-
-	now := time.Now()
-	c.cache[req.key] = &Item{Data: req.data, Time: now, opts: req.opts, Last: now}
-
-	return &res{item: c.cache[req.key], exists: exists}
 }
 
-func (c *Cache) get(key string) *res {
-	item, exists := c.cache[key]
-	if exists {
-		item = item.copy(true) // make a copy, and update.
-		c.stats.hit++
-	} else {
-		c.stats.missed++
+func (c *Cache) get(key string, now time.Time) *Item {
+	if item := c.cache[key]; item != nil {
+		c.stats.Hits++
+		item.Hits++
+		item.Last = now
+
+		return item.copy()
 	}
 
-	return &res{item: item, exists: exists}
+	c.stats.Misses++
+
+	return nil
 }
 
-func (c *Cache) delete(key string) *res {
-	_, exists := c.cache[key]
-	if exists {
-		c.stats.deleted++
-		c.cache[key].Data = nil
-		c.cache[key] = nil
-		delete(c.cache, key)
+func (c *Cache) save(req *req, now time.Time) *Item {
+	item := c.cache[req.key]
+	if item != nil {
+		c.stats.Updates++
 	} else {
-		c.stats.delmiss++
+		c.stats.Saves++
 	}
 
-	return &res{exists: exists}
+	c.cache[req.key] = &Item{Data: req.data, Time: now, Last: now, opts: req.opts}
+
+	return item // not copied, do not use.
 }
 
-func (c *Cache) list() *res {
+func (c *Cache) list() *Item {
 	list := make(map[string]*Item)
 	for key, item := range c.cache {
-		list[key] = item.copy(false) // copy without updating.
+		list[key] = item.copy()
 	}
 
-	return &res{item: &Item{Data: list}}
+	return &Item{Data: list}
 }
 
-func (item *Item) copy(update bool) *Item {
-	if update {
-		item.Hits++
-		item.Last = time.Now()
+func (c *Cache) delete(key string) *Item {
+	item := c.cache[key]
+	if item == nil {
+		c.stats.DelMiss++
+		return nil
 	}
 
+	// item isn't used, but future proof this and avoid leaking
+	// this pointer in case item is returned out of the module.
+	item.opts = nil
+	c.stats.Deletes++
+	delete(c.cache, key)
+
+	return item // not copied.
+}
+
+// copy an item so it can be returned to a user.
+func (i *Item) copy() *Item {
 	return &Item{
-		// do not include item.options.
-		Data: item.Data,
-		Time: item.Time,
-		Last: item.Last,
-		Hits: item.Hits,
+		Data: i.Data,
+		Time: i.Time,
+		Last: i.Last,
+		Hits: i.Hits,
 	}
 }

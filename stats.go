@@ -1,61 +1,53 @@
 package cache
 
-import (
-	"time"
+import "time"
 
-	"github.com/hako/durafmt"
-)
-
-// stats is embedded in the main cache struct.
-// All access is gated and happens inside a single routine.
-type stats struct {
-	hit     int64
-	missed  int64
-	saved   int64
-	updated int64
-	deleted int64
-	delmiss int64
-	pruned  int64
-	pruneRn int64
-	pruneTm time.Duration
+// Stats contains the exported cache statistics.
+type Stats struct {
+	Size    int64    // derived. Count of items in cache.
+	Gets    int64    // derived. Cache gets issued.
+	Hits    int64    // Gets for cached keys.
+	Misses  int64    // Gets for missing keys.
+	Saves   int64    // Saves for a new key.
+	Updates int64    // Saves that caused an update.
+	Deletes int64    // Delete hits.
+	DelMiss int64    // Delete misses.
+	Pruned  int64    // Total items pruned.
+	Prunes  int64    // Number of times pruner has run.
+	Pruning Duration // How much time has been spent pruning.
 }
 
-// GetStats returns the stats as a map.
-func (c *Cache) GetStats() map[string]any {
-	return c.GetExpStats().(map[string]any)
+// Duration is used to format time duration(s) in stats output.
+type Duration struct {
+	time.Duration
 }
 
-// GetExpStats returns the stats as a map[string]interface{} inside of an interface{} so expvar can consume it.
-// Use it in your app like this:
-//     myCache := cache.New(cache.Config{})
-//     expvar.Publish("Cache", expvar.Func(myCache.GetExpStats))
-//     /* or put it inside your own expvar map. */
-//     myMap := expvar.NewMap("myMap")
-//     myMap.Set("Cache", expvar.Func(myCache.GetExpStats))
-func (c *Cache) GetExpStats() any {
-	c.req <- &req{key: getStats}
+// Stats returns the cache statistics.
+// This will never be nil, and concurrent access is OK.
+func (c *Cache) Stats() *Stats {
+	c.req <- &req{stat: true}
 	ret := <-c.res
 
-	return ret.item.Data
+	stats, _ := ret.Data.(Stats)
+	stats.Gets = stats.Hits + stats.Misses
+	stats.Size = ret.Hits
+
+	return &stats
 }
 
-func (c *Cache) getStats() *res {
-	data := map[string]any{
-		"Get":     c.stats.hit + c.stats.missed,
-		"Hits":    c.stats.hit,
-		"Misses":  c.stats.missed,
-		"Saves":   c.stats.saved,
-		"Updates": c.stats.updated,
-		"Deletes": c.stats.deleted,
-		"DelMiss": c.stats.delmiss,
-		"Size":    len(c.cache),
-	}
+// ExpStats returns the stats  inside of an interface{} so expvar can consume it.
+// Use it in your app like this:
+//     myCache := cache.New(cache.Config{})
+//     expvar.Publish("Cache", expvar.Func(myCache.ExpStats))
+//     /* or put it inside your own expvar map. */
+//     myMap := expvar.NewMap("myMap")
+//     myMap.Set("Cache", expvar.Func(myCache.ExpStats))
+// This will never be nil, and concurrent access is OK.
+func (c *Cache) ExpStats() any {
+	return c.Stats()
+}
 
-	if c.conf.PruneInterval != 0 {
-		data["Pruned"] = c.stats.pruned
-		data["Prune Runs"] = c.stats.pruneRn
-		data["Prune Time"] = durafmt.Parse(c.stats.pruneTm).LimitFirstN(2).String()
-	}
-
-	return &res{item: &Item{Data: data}}
+// MarshalJSON turns a Duration into a string for json or expvar.
+func (d *Duration) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + d.String() + `"`), nil
 }
