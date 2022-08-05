@@ -17,4 +17,4 @@ had a `get` requst within a specified duration. Those marked not-prunable
 have a different configurable maximum unused age.
 
 I wrote this to cache data from mysql queries for an [nginx auth proxy](https://github.com/Notifiarr/mysql-auth-proxy).
-See a simple example in [cache_example_test.go](cache_example_test.go).
+See a simple example in [cache_test.go](cache_test.go).
