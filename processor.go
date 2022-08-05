@@ -67,8 +67,8 @@ func (c *Cache) processor(now time.Time, pruner, timer *time.Ticker) {
 		case now = <-pruner.C: // usually a few minutes (ticker).
 			c.prune(&now)
 			c.stats.Pruning.Duration += time.Since(now)
-		case now = <-timer.C: // should be less than 5 seconds.
-			// Update now with a ticker to avoid slow time.Now() calls during request processing.
+		case now = <-timer.C: // usually 1 second to 1 minutes
+			// Update `now` with a ticker to avoid slow time.Now() calls during request processing.
 		case req, ok := <-c.req:
 			switch {
 			case !ok:

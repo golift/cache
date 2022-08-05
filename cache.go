@@ -6,6 +6,9 @@ import "time"
 // All the fields are optional.
 type Config struct {
 	// Prune enables the pruner routine.
+	// This must be enabled to use Expire time on Items.
+	// If you don't want other prunes to happen,
+	// set really long durations for PruneAfter and MaxUnused.
 	// @ recommend 3 minutes - 5 minutes
 	PruneInterval time.Duration
 	// PruneAfter causes the pruner routine to prune keys marked prunable
@@ -35,10 +38,10 @@ type Cache struct {
 }
 
 // Item is what's returned from a cache Get.
-// - Data is the input data. Type-check it back to what it should be.
-// - Time is when the item was saved (or updated) in cache.
-// - Last is the time when the last cache get for this item occurred.
-// - Hits is the number of cache gets for this key.
+//   - Data is the input data. Type-check it back to what it should be.
+//   - Time is when the item was saved (or updated) in cache.
+//   - Last is the time when the last cache get for this item occurred.
+//   - Hits is the number of cache gets for this key.
 type Item struct {
 	Data any       `json:"data"`
 	Time time.Time `json:"created"`
@@ -52,7 +55,7 @@ type Options struct {
 	// Setting Prune true will allow the pruning routine to prune this item.
 	// Items are pruned when they have not been retreived in the PruneAfter duration.
 	Prune bool
-	// You may set a specific evication time for an item. This only works if the
+	// You may set a specific eviction time for an item. This only works if the
 	// pruner is running. The item will be removed from cache after this date/time.
 	// This works independently from setting Prune to true, and follows different logic.
 	// Not setting this, or setting it to zero time will never expire the item.
@@ -123,9 +126,8 @@ func (c *Cache) Start(clean bool) {
 }
 
 // Stop stops the go routine and closes the channels.
-// If clean is true it will clean up memory usage.
-// Pass clean if the app will continue to run,
-// and you don't need to re-use the cache data.
+// If clean is true it will clean up memory usage and delete the cache.
+// Pass clean if the app will continue to run, and you don't need to re-use the cache data.
 func (c *Cache) Stop(clean bool) {
 	c.stop()
 
@@ -141,7 +143,7 @@ func (c *Cache) Get(requestKey string) *Item {
 	return <-c.res
 }
 
-// Save saves an item, and returns true if it already existed.
+// Save saves an item, and returns true if it already existed (got updated).
 func (c *Cache) Save(requestKey string, data any, opts Options) bool {
 	if opts.Expire.IsZero() {
 		opts.Expire = time.Unix(maxExpire, 0)
@@ -160,12 +162,11 @@ func (c *Cache) Delete(requestKey string) bool {
 
 // List returns a copy of the in-memory cache.
 // This will never be nil, and concurrent access is OK.
-// The map Items will also never be nil.
-// Because all items are copies, concurrent access to Itms is also OK.
+// The map Items will also never be nil, and because they
+// are copies, concurrent access to Items is also OK.
 // This method will double the memory footprint until release, and garbage collection runs.
 // If the data stored in cache is large and not pointers, then you may
 // not want to call this method much, or at all.
-// If the data stored in cache is not pointers, this method could double the memory footprint.
 func (c *Cache) List() map[string]*Item {
 	c.req <- &req{list: true}
 	items, _ := (<-c.res).Data.(map[string]*Item)
