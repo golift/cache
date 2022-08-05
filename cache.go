@@ -1,9 +1,9 @@
 package cache
 
-import (
-	"time"
-)
+import "time"
 
+// Config provides the input options for a new cache.
+// All the fields are optional.
 type Config struct {
 	// Prune enables the pruner routine.
 	// @ recommend 3 minutes - 5 minutes
@@ -23,9 +23,9 @@ type Config struct {
 type Cache struct {
 	cache map[string]*Item
 	req   chan *req
-	res   chan *res
+	res   chan *Item
 	conf  *Config
-	stats stats
+	stats Stats
 }
 
 // Item is what's returned from a cache Get.
@@ -44,6 +44,12 @@ type Options struct {
 	Prune bool
 }
 
+// Defaults.
+const (
+	maxUnusedAge = 25 * time.Hour
+	expireAfter  = 18 * time.Minute
+)
+
 // New starts the cache routine and returns a struct to get data from the cache.
 func New(config Config) *Cache {
 	cache := &Cache{conf: &config}
@@ -51,6 +57,25 @@ func New(config Config) *Cache {
 	cache.start()
 
 	return cache
+}
+
+// checkPruneSettings runs once on startup.
+func (c *Cache) checkPruneSettings() {
+	if c.conf.PruneInterval == 0 {
+		return
+	}
+
+	if c.conf.PruneInterval < time.Second {
+		panic("cache prune interval must be 1 second or greater, or 0 to disable pruning")
+	}
+
+	if c.conf.PruneAfter == 0 {
+		c.conf.PruneAfter = expireAfter
+	}
+
+	if c.conf.MaxUnused == 0 {
+		c.conf.MaxUnused = maxUnusedAge
+	}
 }
 
 // Starts sets up the cache and starts the go routine.
@@ -72,8 +97,8 @@ func (c *Cache) Stop(clean bool) {
 
 // Get returns an item, or nil if it doesn't exist.
 func (c *Cache) Get(requestKey string) *Item {
-	c.req <- &req{key: requestKey, get: true}
-	return (<-c.res).item
+	c.req <- &req{key: requestKey}
+	return <-c.res
 }
 
 // Save saves an item, and returns true if it already existed.
@@ -82,17 +107,17 @@ func (c *Cache) Get(requestKey string) *Item {
 // it hasn't been used in the pruneAfter duration.
 func (c *Cache) Save(requestKey string, data any, opts Options) bool {
 	c.req <- &req{key: requestKey, data: data, opts: &opts}
-	return (<-c.res).exists
+	return <-c.res != nil
 }
 
 // Delete removes an item and returns true if it existed.
 func (c *Cache) Delete(requestKey string) bool {
 	c.req <- &req{key: requestKey, del: true}
-	return (<-c.res).exists
+	return <-c.res != nil
 }
 
-// List retuns a copy of the in-memory cache.
+// List returns a copy of the in-memory cache.
 func (c *Cache) List() map[string]*Item {
-	c.req <- &req{key: getList}
-	return (<-c.res).item.Data.(map[string]*Item)
+	c.req <- &req{key: getList, info: true}
+	return (<-c.res).Data.(map[string]*Item)
 }
