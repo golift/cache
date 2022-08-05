@@ -9,7 +9,7 @@ type Stats struct {
 	Hits    int64    // Gets for cached keys.
 	Misses  int64    // Gets for missing keys.
 	Saves   int64    // Saves for a new key.
-	Updates int64    // Saves that casued an update.
+	Updates int64    // Saves that caused an update.
 	Deletes int64    // Delete hits.
 	DelMiss int64    // Delete misses.
 	Pruned  int64    // Total items pruned.
@@ -23,10 +23,12 @@ type Duration struct {
 }
 
 // Stats returns the cache statistics.
+// This will never be nil, and concurrent access is OK.
 func (c *Cache) Stats() *Stats {
-	c.req <- &req{key: getStats, info: true}
+	c.req <- &req{stat: true}
 	ret := <-c.res
-	stats := ret.Data.(Stats)
+
+	stats, _ := ret.Data.(Stats)
 	stats.Gets = stats.Hits + stats.Misses
 	stats.Size = ret.Hits
 
@@ -40,17 +42,12 @@ func (c *Cache) Stats() *Stats {
 //     /* or put it inside your own expvar map. */
 //     myMap := expvar.NewMap("myMap")
 //     myMap.Set("Cache", expvar.Func(myCache.ExpStats))
+// This will never be nil, and concurrent access is OK.
 func (c *Cache) ExpStats() any {
 	return c.Stats()
 }
 
-// getStats is run from within the main processor routine.
-// Returns a copy of the running statistics
-func (c *Cache) getStats() *Item {
-	return &Item{Data: c.stats, Hits: int64(len(c.cache))}
-}
-
-// MarshalJSON turns a Duration into a string for json.
+// MarshalJSON turns a Duration into a string for json or expvar.
 func (d *Duration) MarshalJSON() ([]byte, error) {
 	return []byte(`"` + d.String() + `"`), nil
 }
