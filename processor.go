@@ -64,10 +64,7 @@ func (c *Cache) processRequests() {
 func (c *Cache) processor(now time.Time, pruner, timer *time.Ticker) {
 	for {
 		select {
-		case now = <-pruner.C: // usually a few minutes (ticker).
-			c.prune(&now)
-			c.stats.Pruning.Duration += time.Since(now)
-		case now = <-timer.C: // usually 1 second to 1 minutes
+		case now = <-timer.C: // usually 1 second to 1 minute.
 			// Update `now` with a ticker to avoid slow time.Now() calls during request processing.
 		case req, ok := <-c.req:
 			switch {
@@ -84,6 +81,9 @@ func (c *Cache) processor(now time.Time, pruner, timer *time.Ticker) {
 			default:
 				c.res <- c.delete(req.key)
 			}
+		case now = <-pruner.C: // usually a few minutes (ticker).
+			c.prune(&now)
+			c.stats.Pruning.Duration += time.Since(now)
 		}
 	}
 }
@@ -130,12 +130,12 @@ func (c *Cache) save(req *req, now time.Time) *Item {
 }
 
 func (c *Cache) list() *Item {
-	list := make(map[string]*Item)
+	items := make(map[string]*Item)
 	for key, item := range c.cache {
-		list[key] = item.copy()
+		items[key] = item.copy()
 	}
 
-	return &Item{Data: list}
+	return &Item{Data: items}
 }
 
 func (c *Cache) delete(key string) *Item {
