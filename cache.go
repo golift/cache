@@ -9,7 +9,7 @@ type Config struct {
 	// This must be enabled to use Expire time on Items.
 	// If you don't want other prunes to happen,
 	// set really long durations for PruneAfter and MaxUnused.
-	// @ recommend 3 minutes - 5 minutes
+	// @recommend 3 minutes - 5 minutes
 	PruneInterval time.Duration
 	// PruneAfter causes the pruner routine to prune keys marked prunable
 	// after they have not been used for this duration.
@@ -24,11 +24,11 @@ type Config struct {
 	// Generally, the default of 1 second should be fine for most apps.
 	// If accuracy about when an item was saved isn't important, you can raise
 	// this to a few seconds quite safely and the cache will use fewer cpu cycles.
+	// @default 1 second
 	RequestAccuracy time.Duration
 }
 
-// Cache provides methods to get a user and delete a user from cache.
-// If the user is not in cache it is fetched using the userinfo module.
+// Cache provides methods to get, save and delete a key (with data) from cache.
 type Cache struct {
 	cache map[string]*Item
 	req   chan *req
