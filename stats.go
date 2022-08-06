@@ -35,7 +35,7 @@ func (c *Cache) Stats() *Stats {
 	return &stats
 }
 
-// ExpStats returns the stats  inside of an interface{} so expvar can consume it.
+// ExpStats returns the stats inside of an interface{} so expvar can consume it.
 // Use it in your app like this:
 //     myCache := cache.New(cache.Config{})
 //     expvar.Publish("Cache", expvar.Func(myCache.ExpStats))
