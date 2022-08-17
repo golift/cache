@@ -60,6 +60,7 @@ func (c *Cache) processRequests() {
 }
 
 // processor is the single go routine in this module for request processing.
+//
 //nolint:cyclop // processor has to be "complicated" to do the job.
 func (c *Cache) processor(now time.Time, pruner, timer *time.Ticker) {
 	for {

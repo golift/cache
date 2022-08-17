@@ -37,11 +37,13 @@ func (c *Cache) Stats() *Stats {
 
 // ExpStats returns the stats inside of an interface{} so expvar can consume it.
 // Use it in your app like this:
-//     myCache := cache.New(cache.Config{})
-//     expvar.Publish("Cache", expvar.Func(myCache.ExpStats))
-//     /* or put it inside your own expvar map. */
-//     myMap := expvar.NewMap("myMap")
-//     myMap.Set("Cache", expvar.Func(myCache.ExpStats))
+//
+//	myCache := cache.New(cache.Config{})
+//	expvar.Publish("Cache", expvar.Func(myCache.ExpStats))
+//	/* or put it inside your own expvar map. */
+//	myMap := expvar.NewMap("myMap")
+//	myMap.Set("Cache", expvar.Func(myCache.ExpStats))
+//
 // This will never be nil, and concurrent access is OK.
 func (c *Cache) ExpStats() any {
 	return c.Stats()
