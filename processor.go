@@ -156,6 +156,7 @@ func (c *Cache) delete(key string) *Item {
 }
 
 // copy an item so it can be returned to the caller.
+// Do not call this with a nil Item.
 func (i *Item) copy() *Item {
 	return &Item{
 		Data: i.Data,
