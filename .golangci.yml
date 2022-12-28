@@ -1,0 +1,21 @@
+linters:
+  enable-all: true
+  disable:
+    - maligned
+    - scopelint
+    - interfacer
+    - golint
+    - exhaustivestruct
+    - exhaustruct
+    - nlreturn
+    - varcheck
+    - nosnakecase
+    - structcheck
+    - deadcode
+    - ifshort
+    - rowserrcheck
+    - sqlclosecheck
+    - wastedassign
+
+run:
+  timeout: 3m
