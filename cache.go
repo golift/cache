@@ -17,6 +17,7 @@ type Config struct {
 	PruneAfter time.Duration
 	// Keys not marked prunable are pruned by the pruner routine
 	// after they have not been used for this duration.
+	// Pass cache.Forever to avoid expiring non-prunable items.
 	// @default 25 hours
 	MaxUnused time.Duration
 	// RequestAccuracy can be set between 100 milliseconds and 1 minute.
@@ -64,12 +65,17 @@ type Options struct {
 
 // Defaults.
 const (
-	maxUnusedAge = 25 * time.Hour
-	expireAfter  = 18 * time.Minute
-	minAccuracy  = 100 * time.Millisecond // don't do this.
-	maxAccuracy  = time.Minute            // good for slow-use cache.
-	accuracy     = time.Second            // 1-5s is fine for most things.
-	maxExpire    = 1 << 62                // (almost) max go time. https://stackoverflow.com/questions/25065055
+	defaultMaxUnused = 25 * time.Hour // Use cache.Forever to avoid expiring unused items.
+	defaultExpire    = 18 * time.Minute
+	defaultAccuracy  = time.Second            // 1-5s is fine for most things.
+	minimumAccuracy  = 100 * time.Millisecond // minimum is 1/10th of a second.
+	maximumAccuracy  = time.Hour              // good for slow-use cache.
+)
+
+const (
+	// Forever represents the maximum Go Duration.
+	// You may pass this value to Config.MaxUnused to avoid expiring non-prunable items.
+	Forever time.Duration = 1<<63 - 1
 )
 
 // New starts the cache routine and returns a struct to get data from the cache.
@@ -86,11 +92,11 @@ func New(config Config) *Cache {
 func (c *Cache) checkPruneSettings() {
 	switch {
 	case c.conf.RequestAccuracy == 0:
-		c.conf.RequestAccuracy = accuracy
-	case c.conf.RequestAccuracy < minAccuracy:
-		c.conf.RequestAccuracy = minAccuracy
-	case c.conf.RequestAccuracy > maxAccuracy:
-		c.conf.RequestAccuracy = maxAccuracy
+		c.conf.RequestAccuracy = defaultAccuracy
+	case c.conf.RequestAccuracy < minimumAccuracy:
+		c.conf.RequestAccuracy = minimumAccuracy
+	case c.conf.RequestAccuracy > maximumAccuracy:
+		c.conf.RequestAccuracy = maximumAccuracy
 	}
 
 	if c.conf.PruneInterval == 0 {
@@ -102,11 +108,11 @@ func (c *Cache) checkPruneSettings() {
 	}
 
 	if c.conf.PruneAfter == 0 {
-		c.conf.PruneAfter = expireAfter
+		c.conf.PruneAfter = defaultExpire
 	}
 
 	if c.conf.MaxUnused == 0 {
-		c.conf.MaxUnused = maxUnusedAge
+		c.conf.MaxUnused = defaultMaxUnused
 	}
 }
 
@@ -144,14 +150,18 @@ func (c *Cache) Get(requestKey string) *Item {
 }
 
 // Save saves an item, and returns true if it already existed (got updated).
+// This procedure does NOT update hit/miss stats like Get() does.
 func (c *Cache) Save(requestKey string, data any, opts Options) bool {
-	if opts.Expire.IsZero() {
-		opts.Expire = time.Unix(maxExpire, 0)
-	}
-
 	c.req <- &req{key: requestKey, data: data, opts: &opts}
-
 	return <-c.res != nil
+}
+
+// Update saves an item, and returns a copy of the previously saved item.
+// This procedure updates hit/miss stats like Get() does.
+// Check the item for nil to determine if it existed prior to this call.
+func (c *Cache) Update(requestKey string, data any, opts Options) *Item {
+	c.req <- &req{key: requestKey, get: true, data: data, opts: &opts}
+	return <-c.res
 }
 
 // Delete removes an item and returns true if it existed.

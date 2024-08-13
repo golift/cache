@@ -13,8 +13,9 @@ plug into expvar, or other metrics modules.
 
 This module has a concept of pruning. Items can be marked prunable,
 or not prunable. Those marked prunable are deleted after they have not
-had a `get` requst within a specified duration. Those marked not-prunable
+had a `get` request within a specified duration. Those marked not-prunable
 have a different configurable maximum unused age.
 
 I wrote this to cache data from mysql queries for an [nginx auth proxy](https://github.com/Notifiarr/mysql-auth-proxy).
+I've since began using it in plenty of other places as a global data store.
 See a simple example in [cache_test.go](cache_test.go).

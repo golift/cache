@@ -1,18 +1,10 @@
 linters:
   enable-all: true
   disable:
-    - maligned
-    - scopelint
-    - interfacer
-    - golint
-    - exhaustivestruct
+    - gomnd       # deprecated
+    - execinquery # deprecated
     - exhaustruct
     - nlreturn
-    - varcheck
-    - nosnakecase
-    - structcheck
-    - deadcode
-    - ifshort
     - rowserrcheck
     - sqlclosecheck
     - wastedassign

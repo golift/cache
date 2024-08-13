@@ -65,16 +65,16 @@ func (c *Cache) processRequests() {
 func (c *Cache) processor(now time.Time, pruner, timer *time.Ticker) {
 	for {
 		select {
-		case now = <-timer.C: // usually 1 second to 1 minute.
+		case now = <-timer.C: // usually 1 second to 1 minute, max 1 hour.
 			// Update `now` with a ticker to avoid slow time.Now() calls during request processing.
 		case req, ok := <-c.req:
 			switch {
 			case !ok:
 				return
+			case req.data != nil:
+				c.res <- c.save(req, now, req.get)
 			case req.get:
 				c.res <- c.get(req.key, now)
-			case req.data != nil:
-				c.res <- c.save(req, now)
 			case req.list:
 				c.res <- c.list()
 			case req.stat:
@@ -96,9 +96,9 @@ func (c *Cache) prune(from *time.Time) {
 	for key, item := range c.cache {
 		if last := from.Sub(item.Last); last > c.conf.MaxUnused ||
 			(item.opts.Prune && last > c.conf.PruneAfter) ||
-			from.After(item.opts.Expire) {
-			delete(c.cache, key)
+			(!item.opts.Expire.IsZero() && from.After(item.opts.Expire)) {
 			c.stats.Pruned++
+			delete(c.cache, key)
 		}
 	}
 }
@@ -117,17 +117,25 @@ func (c *Cache) get(key string, now time.Time) *Item {
 	return nil
 }
 
-func (c *Cache) save(req *req, now time.Time) *Item {
-	item := c.cache[req.key]
+func (c *Cache) save(req *req, now time.Time, replace bool) *Item {
+	var item *Item
+
+	if replace {
+		item = c.get(req.key, now) // Apply stats to this Update() request.
+	} else {
+		item = c.cache[req.key] // Avoid hit/miss stats on regular Save().
+	}
+
 	if item != nil {
 		c.stats.Updates++
 	} else {
 		c.stats.Saves++
 	}
 
+	// Update the item in the cache with the provided value.
 	c.cache[req.key] = &Item{Data: req.data, Time: now, Last: now, opts: req.opts}
 
-	return item // not copied, do not use.
+	return item // Not a copy, but also no longer in cache.
 }
 
 func (c *Cache) list() *Item {
