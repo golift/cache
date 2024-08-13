@@ -1,3 +1,4 @@
+// Package cache provides a simple in-memory, globally accessible data cache.
 package cache
 
 import (
