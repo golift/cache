@@ -1,13 +1,18 @@
+version: '2'
 linters:
-  enable-all: true
+  default: all
   disable:
-    - gomnd       # deprecated
-    - execinquery # deprecated
     - exhaustruct
     - nlreturn
-    - rowserrcheck
-    - sqlclosecheck
-    - wastedassign
-
-run:
-  timeout: 3m
+    - depguard
+    - wsl
+  settings:
+    wsl_v5:
+      disable:
+        - assign
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - gofumpt
+    - goimports

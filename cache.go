@@ -151,21 +151,6 @@ func (c *Cache) StartWithContext(ctx context.Context, clean bool) {
 	c.startWithContext(ctx, clean)
 }
 
-func (c *Cache) startWithContext(ctx context.Context, clean bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.run {
-		return // already running, nothing to start.
-	}
-
-	if clean {
-		c.clean()
-	}
-
-	c.start(ctx)
-}
-
 // Stop stops the go routine and closes the channels.
 // If clean is true it will clean up memory usage and delete the cache.
 // Pass clean if the app will continue to run, and you don't need to re-use the cache data.
@@ -230,4 +215,19 @@ func (c *Cache) List() map[string]*Item {
 	items, _ := (<-c.res).Data.(map[string]*Item)
 
 	return items
+}
+
+func (c *Cache) startWithContext(ctx context.Context, clean bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.run {
+		return // already running, nothing to start.
+	}
+
+	if clean {
+		c.clean()
+	}
+
+	c.start(ctx)
 }
