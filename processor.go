@@ -30,6 +30,7 @@ func (c *Cache) start(ctx context.Context) {
 func (c *Cache) stop() {
 	close(c.req)
 	<-c.res // wait for it to close.
+	c.run = false
 }
 
 // clean it up and free some memory.
@@ -62,7 +63,6 @@ func (c *Cache) processRequests(ctx context.Context) {
 
 		timer.Stop()
 		close(c.res) // close response channel when request channel closes.
-		c.run = false
 	}()
 
 	// This only returns when Stop() is called or the context is Done.
@@ -74,7 +74,6 @@ func (c *Cache) processor(ctx context.Context, now time.Time, pruner, timer *tim
 	for {
 		select {
 		case <-ctx.Done():
-			close(c.req)
 			return
 		case now = <-timer.C: // usually 1 second to 1 minute, max 1 hour.
 			// Update `now` with a ticker to avoid slow time.Now() calls during request processing.
