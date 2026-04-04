@@ -2,70 +2,80 @@ package cache
 
 import (
 	"context"
-	"fmt"
 	"time"
 )
 
-type opType int
-
-const (
-	opGet opType = iota
-	opSave
-	opUpdate
-	opList
-	opStat
-	opDelete
-)
-
-// req is our request (input channel data).
-// opts is stored by value so a pooled *req can be released after save() copies
-// options into the stored Item (Item.opts must not point into the pool).
-type req struct {
-	key  string
-	op   opType // operation type.
-	data any    // input data for a save op.
-	opts Options
+func (c *Cache) areWeRunning() {
+	if !c.running.Load() {
+		panic("cache: operation on cache that is not running")
+	}
 }
 
-func (c *Cache) newRequest() *req {
-	v := c.reqPool.Get()
-	if v == nil {
-		return &req{}
+// cachedNow returns the last tick time from the background goroutine, or time.Now()
+// if the clock has not been initialized yet.
+func (c *Cache) cachedNow() time.Time {
+	if c.conf.RequestAccuracy == 0 {
+		return time.Now()
 	}
 
-	out, ok := v.(*req)
-	if !ok {
-		return &req{}
-	}
-
-	return out
-}
-
-func (c *Cache) releaseReq(poolReq *req) {
-	if poolReq == nil {
-		return
-	}
-
-	*poolReq = req{}       // clear the request.
-	c.reqPool.Put(poolReq) // return the request to the pool.
+	return *c.now.Load()
 }
 
 func (c *Cache) start(ctx context.Context) {
+	c.stopMu.Lock()
+	defer c.stopMu.Unlock()
+
+	if c.running.Load() {
+		return
+	}
+
+	c.mu.Lock()
 	if c.cache == nil {
 		c.cache = make(map[string]*Item)
 	}
 
-	c.req = make(chan *req)
-	c.res = make(chan *Item)
-	c.run = true
+	c.mu.Unlock()
 
-	go c.processRequests(ctx)
+	runCtx, cancel := context.WithCancel(ctx)
+	c.cancel = cancel
+	c.wg.Go(func() { c.backgroundLoop(runCtx) })
+	c.running.Store(true)
 }
 
-func (c *Cache) stop() {
-	close(c.req)
-	<-c.res // wait for it to close.
-	c.run = false
+func (c *Cache) backgroundLoop(ctx context.Context) {
+	if c.conf.RequestAccuracy == 0 && c.conf.PruneInterval == 0 {
+		return
+	}
+
+	now := time.Now()
+	update := now
+	c.now.Store(&update)
+
+	timer := &time.Ticker{}
+	if c.conf.RequestAccuracy > 0 {
+		timer = time.NewTicker(c.conf.RequestAccuracy)
+		defer timer.Stop()
+	}
+
+	pruner := &time.Ticker{}
+	if c.conf.PruneInterval > 0 {
+		pruner = time.NewTicker(c.conf.PruneInterval)
+		defer pruner.Stop()
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case update := <-timer.C:
+			c.now.Store(&update)
+		case now = <-pruner.C:
+			c.mu.Lock()
+			c.prune(&now)
+			c.stats.Pruning.Duration += time.Since(now)
+			c.mu.Unlock()
+		}
+	}
 }
 
 // clean it up and free some memory.
@@ -80,69 +90,8 @@ func (c *Cache) clean() {
 	c.cache = nil
 }
 
-// processRequests readies and starts the main go routine for the cache.
-func (c *Cache) processRequests(ctx context.Context) {
-	var (
-		pruner = &time.Ticker{}
-		timer  = time.NewTicker(c.conf.RequestAccuracy)
-	)
-
-	defer func() {
-		timer.Stop()
-		close(c.res) // close response channel when request channel closes.
-	}()
-
-	if c.conf.PruneInterval > 0 {
-		pruner = time.NewTicker(c.conf.PruneInterval)
-		defer pruner.Stop()
-	}
-
-	// This only returns when Stop() is called or the context is Done.
-	c.processor(ctx, time.Now(), pruner, timer)
-}
-
-// processor is the single go routine in this module for request processing.
-func (c *Cache) processor(ctx context.Context, now time.Time, pruner, timer *time.Ticker) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case now = <-timer.C: // usually 1 second to 1 minute, max 1 hour.
-			// Update `now` with a ticker to avoid slow time.Now() calls during request processing.
-		case req, ok := <-c.req:
-			if !ok {
-				return // Stop() called. Shutting down!
-			}
-
-			c.process(now, req)
-		case now = <-pruner.C: // usually a few minutes (ticker).
-			c.prune(&now)
-			c.stats.Pruning.Duration += time.Since(now)
-		}
-	}
-}
-
-// process a request from the processor().
-func (c *Cache) process(now time.Time, req *req) {
-	switch req.op {
-	case opUpdate:
-		fallthrough
-	case opSave:
-		c.res <- c.save(req, now, req.op == opUpdate)
-	case opGet:
-		c.res <- c.get(req.key, now)
-	case opList:
-		c.res <- c.list()
-	case opStat:
-		c.res <- &Item{Data: c.stats, Hits: int64(len(c.cache))}
-	case opDelete:
-		c.res <- c.delete(req.key)
-	default:
-		panic(fmt.Sprintf("unknown operation: %d - this is a bug in the golift/cache library!", req.op))
-	}
-}
-
-// prune (optionally) runs at an interval inside tha main thread.
+// prune (optionally) runs at an interval inside the main thread.
+// Caller must hold c.mu (write lock).
 func (c *Cache) prune(from *time.Time) {
 	c.stats.Prunes++
 
@@ -156,6 +105,7 @@ func (c *Cache) prune(from *time.Time) {
 	}
 }
 
+// get returns a copy of an item. Caller must hold c.mu (write lock).
 func (c *Cache) get(key string, now time.Time) *Item {
 	if item := c.cache[key]; item != nil {
 		c.stats.Hits++
@@ -170,13 +120,14 @@ func (c *Cache) get(key string, now time.Time) *Item {
 	return nil
 }
 
-func (c *Cache) save(req *req, now time.Time, replace bool) *Item {
+// save stores an item. Caller must hold c.mu (write lock).
+func (c *Cache) save(key string, data any, opts Options, now time.Time, replace bool) *Item {
 	var item *Item
 
 	if replace {
-		item = c.get(req.key, now) // Apply stats to this Update() request.
+		item = c.get(key, now) // Apply stats to this Update() request.
 	} else {
-		item = c.cache[req.key] // Avoid hit/miss stats on regular Save().
+		item = c.cache[key] // Avoid hit/miss stats on regular Save().
 	}
 
 	if item != nil {
@@ -185,22 +136,23 @@ func (c *Cache) save(req *req, now time.Time, replace bool) *Item {
 		c.stats.Saves++
 	}
 
-	// Copy opts onto the heap for the Item; do not use &req.opts (pooled memory).
-	optsCopy := req.opts
-	c.cache[req.key] = &Item{Data: req.data, Time: now, Last: now, opts: &optsCopy}
+	optsCopy := opts
+	c.cache[key] = &Item{Data: data, Time: now, Last: now, opts: &optsCopy}
 
 	return item // Not a copy, but also no longer in cache.
 }
 
-func (c *Cache) list() *Item {
+// listCopy returns a shallow copy of all items. Caller must hold c.mu (read or write lock).
+func (c *Cache) listCopy() map[string]*Item {
 	items := make(map[string]*Item)
 	for key, item := range c.cache {
 		items[key] = item.copy()
 	}
 
-	return &Item{Data: items}
+	return items
 }
 
+// delete removes a key. Caller must hold c.mu (write lock).
 func (c *Cache) delete(key string) *Item {
 	item := c.cache[key]
 	if item == nil {

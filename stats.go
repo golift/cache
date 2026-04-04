@@ -25,18 +25,14 @@ type Duration struct {
 // Stats returns the cache statistics.
 // This will never be nil, and concurrent access is OK.
 func (c *Cache) Stats() *Stats {
-	poolReq := c.newRequest()
-	poolReq.op = opStat
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 
-	c.req <- poolReq
+	c.areWeRunning() // this will panic if the cache is not running.
 
-	ret := <-c.res
-
-	c.releaseReq(poolReq)
-
-	stats, _ := ret.Data.(Stats)
+	stats := c.stats
 	stats.Gets = stats.Hits + stats.Misses
-	stats.Size = ret.Hits
+	stats.Size = int64(len(c.cache))
 
 	return &stats
 }
