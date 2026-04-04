@@ -11,8 +11,8 @@ func (c *Cache) areWeRunning() {
 	}
 }
 
-// cachedNow returns the last tick time from the background goroutine, or time.Now()
-// if the clock has not been initialized yet.
+// cachedNow returns time.Now() when RequestAccuracy is zero (default). When polling
+// is enabled, it returns the last tick from the background goroutine.
 func (c *Cache) cachedNow() time.Time {
 	if c.conf.RequestAccuracy == 0 {
 		return time.Now()
@@ -36,9 +36,8 @@ func (c *Cache) start(ctx context.Context) {
 
 	c.mu.Unlock()
 
-	runCtx, cancel := context.WithCancel(ctx)
-	c.cancel = cancel
-	c.wg.Go(func() { c.backgroundLoop(runCtx) })
+	ctx, c.cancel = context.WithCancel(ctx)
+	c.wg.Go(func() { c.backgroundLoop(ctx) })
 	c.running.Store(true)
 }
 

@@ -28,12 +28,11 @@ type Config struct {
 	// Pass cache.Forever to avoid expiring non-prunable items.
 	// @default 25 hours
 	MaxUnused time.Duration
-	// RequestAccuracy can be set between 100 milliseconds and 1 minute.
-	// This sets the ticker interval that updates our time.Now() variable.
-	// Generally, the default of 1 second should be fine for most apps.
-	// If accuracy about when an item was saved isn't important, you can raise
-	// this to a few seconds quite safely and the cache will use fewer cpu cycles.
-	// @default 1 second
+	// RequestAccuracy controls whether the cache polls time in the background.
+	// Zero (the default) means each Get/Save path calls time.Now() directly.
+	// Values from 1 up to minimumAccuracy (100ms) are treated like 100ms.
+	// Above minimumAccuracy, a ticker updates a shared clock at this interval
+	// so hot paths can avoid calling time.Now() every time (capped at 1 hour).
 	RequestAccuracy time.Duration
 }
 
@@ -45,8 +44,8 @@ type Cache struct {
 	stats   Stats
 	running atomic.Bool
 	conf    *Config
-	// now is updated by the background goroutine every RequestAccuracy (avoids
-	// time.Now() on every Get/Save while the cache is running).
+	// now is updated by the background goroutine when RequestAccuracy is above
+	// minimumAccuracy; otherwise cachedNow uses time.Now() per request.
 	now atomic.Pointer[time.Time]
 
 	cancel context.CancelFunc
@@ -83,8 +82,7 @@ const (
 	defaultMaxUnused = 25 * time.Hour         // Use cache.Forever to avoid expiring unused items.
 	minimumPruneDur  = time.Second            // Not optimized for sub-second caches. (set PruneInterval)
 	defaultPruneDur  = 18 * time.Minute       // 18m is probably not what you want. (set PruneAfter if 0)
-	defaultAccuracy  = time.Second            // 1-5s is fine for most things.
-	minimumAccuracy  = 100 * time.Millisecond // Minimum is 1/10th of a second.
+	minimumAccuracy  = 100 * time.Millisecond // Below or equal: no polled clock; use time.Now() per request.
 	maximumAccuracy  = time.Hour              // Good for slow-use cache.
 )
 
@@ -116,12 +114,9 @@ func newWithContext(ctx context.Context, config Config) *Cache {
 
 // newCache runs once from New() and turns a *Config into a *Cache you can Start().
 func newCache(conf *Config) *Cache {
-	switch {
-	case conf.RequestAccuracy == 0:
-		conf.RequestAccuracy = defaultAccuracy
-	case conf.RequestAccuracy < minimumAccuracy:
+	if conf.RequestAccuracy != 0 && conf.RequestAccuracy < minimumAccuracy {
 		conf.RequestAccuracy = minimumAccuracy
-	case conf.RequestAccuracy > maximumAccuracy:
+	} else if conf.RequestAccuracy > maximumAccuracy {
 		conf.RequestAccuracy = maximumAccuracy
 	}
 
@@ -141,6 +136,7 @@ func newCache(conf *Config) *Cache {
 
 	cache := &Cache{conf: conf}
 	now := time.Now()
+	// Initialize this here so cacheNow() doesn't panic.
 	cache.now.Store(&now)
 
 	return cache
