@@ -4,6 +4,7 @@ package cache
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -38,14 +39,18 @@ type Config struct {
 
 // Cache provides methods to get, save and delete a key (with data) from cache.
 type Cache struct {
+	mu      sync.RWMutex
+	stopMu  sync.Mutex // serializes Start/Stop (avoids races with wg.Add/Wait).
 	cache   map[string]*Item
-	req     chan *req
-	res     chan *Item
-	run     bool
-	conf    *Config
 	stats   Stats
-	mu      sync.Mutex // locks 'run' on Start() and Stop().
-	reqPool sync.Pool  // reuses *req structs to avoid an allocation per cache operation.
+	running atomic.Bool
+	conf    *Config
+	// now is updated by the background goroutine every RequestAccuracy (avoids
+	// time.Now() on every Get/Save while the cache is running).
+	now atomic.Pointer[time.Time]
+
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 // Item is what's returned from a cache Get.
@@ -134,7 +139,11 @@ func newCache(conf *Config) *Cache {
 		conf.MaxUnused = defaultMaxUnused
 	}
 
-	return &Cache{conf: conf, reqPool: sync.Pool{New: func() any { return &req{} }}}
+	cache := &Cache{conf: conf}
+	now := time.Now()
+	cache.now.Store(&now)
+
+	return cache
 }
 
 // Start sets up the cache and starts the go routine using a Background context.
@@ -152,21 +161,25 @@ func (c *Cache) StartWithContext(ctx context.Context, clean bool) {
 	c.startWithContext(ctx, clean)
 }
 
-// Stop stops the go routine and closes the channels.
+// Stop stops the cache processor.
 // If clean is true it will clean up memory usage and delete the cache.
 // Pass clean if the app will continue to run, and you don't need to re-use the cache data.
 func (c *Cache) Stop(clean bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if !c.run {
-		return // not running, nothing to stop.
+	c.stopMu.Lock() // serializes Start/Stop (avoids races with wg.Go()).
+	if !c.running.Load() {
+		c.stopMu.Unlock()
+		return
 	}
 
-	c.stop()
+	c.cancel()
+	c.wg.Wait()
+	c.running.Store(false)
+	c.stopMu.Unlock()
 
 	if clean {
+		c.mu.Lock()
 		c.clean()
+		c.mu.Unlock()
 	}
 }
 
@@ -174,36 +187,24 @@ func (c *Cache) Stop(clean bool) {
 // This library will not read or write to the item after it's returned.
 // Calling this procedure after calling Stop() or cancelling the context produces a panic.
 func (c *Cache) Get(requestKey string) *Item {
-	poolReq := c.newRequest()
-	poolReq.key = requestKey
-	poolReq.op = opGet
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	c.req <- poolReq
+	c.areWeRunning() // this will panic if the cache is not running.
 
-	out := <-c.res
-
-	c.releaseReq(poolReq)
-
-	return out
+	return c.get(requestKey, c.cachedNow())
 }
 
 // Save saves an item, and returns true if it already existed (got updated).
 // This procedure does NOT update hit/miss stats like cache.Get() does.
 // Calling this procedure after calling Stop() or cancelling the context produces a panic.
 func (c *Cache) Save(requestKey string, data any, opts Options) bool {
-	poolReq := c.newRequest()
-	poolReq.key = requestKey
-	poolReq.op = opSave
-	poolReq.data = data
-	poolReq.opts = opts
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	c.req <- poolReq
+	c.areWeRunning() // this will panic if the cache is not running.
 
-	ok := <-c.res != nil
-
-	c.releaseReq(poolReq)
-
-	return ok
+	return c.save(requestKey, data, opts, c.cachedNow(), false) != nil
 }
 
 // Update saves an item, and returns a copy of the previously saved item.
@@ -212,35 +213,23 @@ func (c *Cache) Save(requestKey string, data any, opts Options) bool {
 // Check the item for nil to determine if it existed prior to this call.
 // Calling this procedure after calling Stop() or cancelling the context produces a panic.
 func (c *Cache) Update(requestKey string, data any, opts Options) *Item {
-	poolReq := c.newRequest()
-	poolReq.key = requestKey
-	poolReq.op = opUpdate
-	poolReq.data = data
-	poolReq.opts = opts
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	c.req <- poolReq
+	c.areWeRunning() // this will panic if the cache is not running.
 
-	out := <-c.res
-
-	c.releaseReq(poolReq)
-
-	return out
+	return c.save(requestKey, data, opts, c.cachedNow(), true)
 }
 
 // Delete removes an item and returns true if it existed.
 // Calling this procedure after calling Stop() or cancelling the context produces a panic.
 func (c *Cache) Delete(requestKey string) bool {
-	poolReq := c.newRequest()
-	poolReq.key = requestKey
-	poolReq.op = opDelete
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	c.req <- poolReq
+	c.areWeRunning() // this will panic if the cache is not running.
 
-	ok := <-c.res != nil
-
-	c.releaseReq(poolReq)
-
-	return ok
+	return c.delete(requestKey) != nil
 }
 
 // List returns a copy of the in-memory cache. The map list will never be nil.
@@ -252,25 +241,18 @@ func (c *Cache) Delete(requestKey string) bool {
 // not want to call this method much, or at all.
 // Calling this procedure after calling Stop() or cancelling the context produces a panic.
 func (c *Cache) List() map[string]*Item {
-	poolReq := c.newRequest()
-	poolReq.op = opList
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 
-	c.req <- poolReq
+	c.areWeRunning() // this will panic if the cache is not running.
 
-	ret := <-c.res
-
-	c.releaseReq(poolReq)
-
-	items, _ := ret.Data.(map[string]*Item)
-
-	return items
+	return c.listCopy()
 }
 
 func (c *Cache) startWithContext(ctx context.Context, clean bool) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.run {
+	if c.running.Load() {
+		c.mu.Unlock()
 		return // already running, nothing to start.
 	}
 
@@ -278,5 +260,6 @@ func (c *Cache) startWithContext(ctx context.Context, clean bool) {
 		c.clean()
 	}
 
+	c.mu.Unlock()
 	c.start(ctx)
 }
