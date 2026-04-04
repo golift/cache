@@ -46,16 +46,21 @@ func (c *Cache) clean() {
 
 // processRequests readies and starts the main go routine for the cache.
 func (c *Cache) processRequests(ctx context.Context) {
-	pruner := &time.Ticker{}
+	var (
+		pruner *time.Ticker
+		timer  = time.NewTicker(c.conf.RequestAccuracy)
+	)
+
 	if c.conf.PruneInterval > 0 {
 		pruner = time.NewTicker(c.conf.PruneInterval)
 	}
 
-	timer := time.NewTicker(c.conf.RequestAccuracy)
-
 	defer func() {
+		if pruner != nil {
+			pruner.Stop()
+		}
+
 		timer.Stop()
-		pruner.Stop()
 		close(c.res) // close response channel when request channel closes.
 		c.run = false
 	}()
