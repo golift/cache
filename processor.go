@@ -18,11 +18,36 @@ const (
 )
 
 // req is our request (input channel data).
+// opts is stored by value so a pooled *req can be released after save() copies
+// options into the stored Item (Item.opts must not point into the pool).
 type req struct {
 	key  string
 	op   opType // operation type.
 	data any    // input data for a save op.
-	opts *Options
+	opts Options
+}
+
+func (c *Cache) newRequest() *req {
+	v := c.reqPool.Get()
+	if v == nil {
+		return &req{}
+	}
+
+	out, ok := v.(*req)
+	if !ok {
+		return &req{}
+	}
+
+	return out
+}
+
+func (c *Cache) releaseReq(poolReq *req) {
+	if poolReq == nil {
+		return
+	}
+
+	*poolReq = req{}       // clear the request.
+	c.reqPool.Put(poolReq) // return the request to the pool.
 }
 
 func (c *Cache) start(ctx context.Context) {
@@ -160,8 +185,9 @@ func (c *Cache) save(req *req, now time.Time, replace bool) *Item {
 		c.stats.Saves++
 	}
 
-	// Update the item in the cache with the provided value.
-	c.cache[req.key] = &Item{Data: req.data, Time: now, Last: now, opts: req.opts}
+	// Copy opts onto the heap for the Item; do not use &req.opts (pooled memory).
+	optsCopy := req.opts
+	c.cache[req.key] = &Item{Data: req.data, Time: now, Last: now, opts: &optsCopy}
 
 	return item // Not a copy, but also no longer in cache.
 }

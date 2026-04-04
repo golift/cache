@@ -38,13 +38,14 @@ type Config struct {
 
 // Cache provides methods to get, save and delete a key (with data) from cache.
 type Cache struct {
-	cache map[string]*Item
-	req   chan *req
-	res   chan *Item
-	run   bool
-	conf  *Config
-	stats Stats
-	mu    sync.Mutex // locks 'run' on Start() and Stop().
+	cache   map[string]*Item
+	req     chan *req
+	res     chan *Item
+	run     bool
+	conf    *Config
+	stats   Stats
+	mu      sync.Mutex // locks 'run' on Start() and Stop().
+	reqPool sync.Pool  // reuses *req structs to avoid an allocation per cache operation.
 }
 
 // Item is what's returned from a cache Get.
@@ -133,7 +134,7 @@ func newCache(conf *Config) *Cache {
 		conf.MaxUnused = defaultMaxUnused
 	}
 
-	return &Cache{conf: conf}
+	return &Cache{conf: conf, reqPool: sync.Pool{New: func() any { return &req{} }}}
 }
 
 // Start sets up the cache and starts the go routine using a Background context.
@@ -173,16 +174,36 @@ func (c *Cache) Stop(clean bool) {
 // This library will not read or write to the item after it's returned.
 // Calling this procedure after calling Stop() or cancelling the context produces a panic.
 func (c *Cache) Get(requestKey string) *Item {
-	c.req <- &req{key: requestKey, op: opGet}
-	return <-c.res
+	poolReq := c.newRequest()
+	poolReq.key = requestKey
+	poolReq.op = opGet
+
+	c.req <- poolReq
+
+	out := <-c.res
+
+	c.releaseReq(poolReq)
+
+	return out
 }
 
 // Save saves an item, and returns true if it already existed (got updated).
 // This procedure does NOT update hit/miss stats like cache.Get() does.
 // Calling this procedure after calling Stop() or cancelling the context produces a panic.
 func (c *Cache) Save(requestKey string, data any, opts Options) bool {
-	c.req <- &req{key: requestKey, op: opSave, data: data, opts: &opts}
-	return <-c.res != nil
+	poolReq := c.newRequest()
+	poolReq.key = requestKey
+	poolReq.op = opSave
+	poolReq.data = data
+	poolReq.opts = opts
+
+	c.req <- poolReq
+
+	ok := <-c.res != nil
+
+	c.releaseReq(poolReq)
+
+	return ok
 }
 
 // Update saves an item, and returns a copy of the previously saved item.
@@ -191,15 +212,35 @@ func (c *Cache) Save(requestKey string, data any, opts Options) bool {
 // Check the item for nil to determine if it existed prior to this call.
 // Calling this procedure after calling Stop() or cancelling the context produces a panic.
 func (c *Cache) Update(requestKey string, data any, opts Options) *Item {
-	c.req <- &req{key: requestKey, op: opUpdate, data: data, opts: &opts}
-	return <-c.res
+	poolReq := c.newRequest()
+	poolReq.key = requestKey
+	poolReq.op = opUpdate
+	poolReq.data = data
+	poolReq.opts = opts
+
+	c.req <- poolReq
+
+	out := <-c.res
+
+	c.releaseReq(poolReq)
+
+	return out
 }
 
 // Delete removes an item and returns true if it existed.
 // Calling this procedure after calling Stop() or cancelling the context produces a panic.
 func (c *Cache) Delete(requestKey string) bool {
-	c.req <- &req{key: requestKey, op: opDelete}
-	return <-c.res != nil
+	poolReq := c.newRequest()
+	poolReq.key = requestKey
+	poolReq.op = opDelete
+
+	c.req <- poolReq
+
+	ok := <-c.res != nil
+
+	c.releaseReq(poolReq)
+
+	return ok
 }
 
 // List returns a copy of the in-memory cache. The map list will never be nil.
@@ -211,8 +252,16 @@ func (c *Cache) Delete(requestKey string) bool {
 // not want to call this method much, or at all.
 // Calling this procedure after calling Stop() or cancelling the context produces a panic.
 func (c *Cache) List() map[string]*Item {
-	c.req <- &req{op: opList}
-	items, _ := (<-c.res).Data.(map[string]*Item)
+	poolReq := c.newRequest()
+	poolReq.op = opList
+
+	c.req <- poolReq
+
+	ret := <-c.res
+
+	c.releaseReq(poolReq)
+
+	items, _ := ret.Data.(map[string]*Item)
 
 	return items
 }
