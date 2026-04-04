@@ -9,8 +9,9 @@ This module provides a small in-memory key/value cache for Go.
 
 - **Concurrency:** A `sync.RWMutex` protects the map and write-heavy operations (`Get`, `Save`, `Update`, `Delete`).
   Read-mostly work such as `List` and `Stats` uses a read lock when possible.
-- **Background work:** One goroutine refreshes a shared clock on `RequestAccuracy` (so hot paths avoid `time.Now()`
-  every time) and runs the optional pruner on `PruneInterval`.
+- **Background work:** By default each operation uses `time.Now()` directly. If `RequestAccuracy` is set above
+  100ms, one goroutine also refreshes a shared clock on that interval (fewer `time.Now()` calls on hot paths).
+  The optional pruner runs on `PruneInterval`.
 - **Metrics:** Hit/miss and other counters are exposed for `expvar` or your own metrics pipeline.
 
 Items can be marked prunable or not. Prunable entries are removed after they have not been retrieved within `PruneAfter`.
