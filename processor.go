@@ -2,16 +2,26 @@ package cache
 
 import (
 	"context"
+	"fmt"
 	"time"
+)
+
+type opType int
+
+const (
+	opGet opType = iota
+	opSave
+	opUpdate
+	opList
+	opStat
+	opDelete
 )
 
 // req is our request (input channel data).
 type req struct {
 	key  string
-	get  bool // get request.
-	stat bool // return stats.
-	list bool // return cache.
-	data any  // input data for a save op.
+	op   opType // operation type.
+	data any    // input data for a save op.
 	opts *Options
 }
 
@@ -30,6 +40,7 @@ func (c *Cache) start(ctx context.Context) {
 func (c *Cache) stop() {
 	close(c.req)
 	<-c.res // wait for it to close.
+	c.run = false
 }
 
 // clean it up and free some memory.
@@ -46,19 +57,20 @@ func (c *Cache) clean() {
 
 // processRequests readies and starts the main go routine for the cache.
 func (c *Cache) processRequests(ctx context.Context) {
-	pruner := &time.Ticker{}
-	if c.conf.PruneInterval > 0 {
-		pruner = time.NewTicker(c.conf.PruneInterval)
-	}
-
-	timer := time.NewTicker(c.conf.RequestAccuracy)
+	var (
+		pruner = &time.Ticker{}
+		timer  = time.NewTicker(c.conf.RequestAccuracy)
+	)
 
 	defer func() {
 		timer.Stop()
-		pruner.Stop()
 		close(c.res) // close response channel when request channel closes.
-		c.run = false
 	}()
+
+	if c.conf.PruneInterval > 0 {
+		pruner = time.NewTicker(c.conf.PruneInterval)
+		defer pruner.Stop()
+	}
 
 	// This only returns when Stop() is called or the context is Done.
 	c.processor(ctx, time.Now(), pruner, timer)
@@ -69,7 +81,6 @@ func (c *Cache) processor(ctx context.Context, now time.Time, pruner, timer *tim
 	for {
 		select {
 		case <-ctx.Done():
-			close(c.req)
 			return
 		case now = <-timer.C: // usually 1 second to 1 minute, max 1 hour.
 			// Update `now` with a ticker to avoid slow time.Now() calls during request processing.
@@ -88,17 +99,21 @@ func (c *Cache) processor(ctx context.Context, now time.Time, pruner, timer *tim
 
 // process a request from the processor().
 func (c *Cache) process(now time.Time, req *req) {
-	switch {
-	case req.data != nil:
-		c.res <- c.save(req, now, req.get)
-	case req.get:
+	switch req.op {
+	case opUpdate:
+		fallthrough
+	case opSave:
+		c.res <- c.save(req, now, req.op == opUpdate)
+	case opGet:
 		c.res <- c.get(req.key, now)
-	case req.list:
+	case opList:
 		c.res <- c.list()
-	case req.stat:
+	case opStat:
 		c.res <- &Item{Data: c.stats, Hits: int64(len(c.cache))}
-	default:
+	case opDelete:
 		c.res <- c.delete(req.key)
+	default:
+		panic(fmt.Sprintf("unknown operation: %d - this is a bug in the golift/cache library!", req.op))
 	}
 }
 
