@@ -25,7 +25,7 @@ type Duration struct {
 // Stats returns the cache statistics.
 // This will never be nil, and concurrent access is OK.
 func (c *Cache) Stats() *Stats {
-	c.req <- &req{stat: true}
+	c.req <- &req{op: opStat}
 	ret := <-c.res
 
 	stats, _ := ret.Data.(Stats)

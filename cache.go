@@ -173,7 +173,7 @@ func (c *Cache) Stop(clean bool) {
 // This library will not read or write to the item after it's returned.
 // Calling this procedure after calling Stop() or cancelling the context produces a panic.
 func (c *Cache) Get(requestKey string) *Item {
-	c.req <- &req{key: requestKey, get: true}
+	c.req <- &req{key: requestKey, op: opGet}
 	return <-c.res
 }
 
@@ -181,7 +181,7 @@ func (c *Cache) Get(requestKey string) *Item {
 // This procedure does NOT update hit/miss stats like cache.Get() does.
 // Calling this procedure after calling Stop() or cancelling the context produces a panic.
 func (c *Cache) Save(requestKey string, data any, opts Options) bool {
-	c.req <- &req{key: requestKey, data: data, opts: &opts}
+	c.req <- &req{key: requestKey, op: opSave, data: data, opts: &opts}
 	return <-c.res != nil
 }
 
@@ -191,14 +191,14 @@ func (c *Cache) Save(requestKey string, data any, opts Options) bool {
 // Check the item for nil to determine if it existed prior to this call.
 // Calling this procedure after calling Stop() or cancelling the context produces a panic.
 func (c *Cache) Update(requestKey string, data any, opts Options) *Item {
-	c.req <- &req{key: requestKey, get: true, data: data, opts: &opts}
+	c.req <- &req{key: requestKey, op: opUpdate, data: data, opts: &opts}
 	return <-c.res
 }
 
 // Delete removes an item and returns true if it existed.
 // Calling this procedure after calling Stop() or cancelling the context produces a panic.
 func (c *Cache) Delete(requestKey string) bool {
-	c.req <- &req{key: requestKey}
+	c.req <- &req{key: requestKey, op: opDelete}
 	return <-c.res != nil
 }
 
@@ -211,7 +211,7 @@ func (c *Cache) Delete(requestKey string) bool {
 // not want to call this method much, or at all.
 // Calling this procedure after calling Stop() or cancelling the context produces a panic.
 func (c *Cache) List() map[string]*Item {
-	c.req <- &req{list: true}
+	c.req <- &req{op: opList}
 	items, _ := (<-c.res).Data.(map[string]*Item)
 
 	return items
