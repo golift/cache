@@ -99,18 +99,18 @@ func (c *Cache) processor(ctx context.Context, now time.Time, pruner, timer *tim
 
 // process a request from the processor().
 func (c *Cache) process(now time.Time, req *req) {
-	switch {
-	case req.op == opUpdate:
+	switch req.op {
+	case opUpdate:
 		fallthrough
-	case req.op == opSave:
+	case opSave:
 		c.res <- c.save(req, now, req.op == opUpdate)
-	case req.op == opGet:
+	case opGet:
 		c.res <- c.get(req.key, now)
-	case req.op == opList:
+	case opList:
 		c.res <- c.list()
-	case req.op == opStat:
+	case opStat:
 		c.res <- &Item{Data: c.stats, Hits: int64(len(c.cache))}
-	case req.op == opDelete:
+	case opDelete:
 		c.res <- c.delete(req.key)
 	default:
 		panic(fmt.Sprintf("unknown operation: %d - this is a bug in the golift/cache library!", req.op))
