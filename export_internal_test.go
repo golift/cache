@@ -1,48 +1,74 @@
 package cache
 
-import "time"
+import (
+	"time"
+)
 
 // NewTestCache creates a *Cache with its internal map initialized but without
 // starting the background goroutine. Only used from white-box tests.
 func NewTestCache(conf Config) *Cache {
-	tc := newCache(&conf)
-	tc.cache = make(map[string]*Item)
-
-	return tc
+	return newCache(&conf)
 }
 
 // AddTestItem inserts an item directly into the cache map so tests can set
 // an arbitrary Last timestamp.
 func (c *Cache) AddTestItem(key string, lastAccess time.Time, opts Options) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	shardInst := c.shardFor(key)
+	shardInst.mu.Lock()
+	defer shardInst.mu.Unlock()
 
 	optsCopy := opts
-	c.cache[key] = &Item{Data: "test", Time: lastAccess, Last: lastAccess, opts: &optsCopy}
+	shardInst.items[key] = &Item{Data: "test", Time: lastAccess, Last: lastAccess, opts: &optsCopy}
 }
 
 // HasKey reports whether a key currently exists in the cache map.
 func (c *Cache) HasKey(key string) bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	shardInst := c.shardFor(key)
 
-	_, ok := c.cache[key]
+	shardInst.mu.RLock()
+	defer shardInst.mu.RUnlock()
+
+	_, ok := shardInst.items[key]
 
 	return ok
 }
 
 // RunPrune calls the internal prune function with the provided reference time.
 func (c *Cache) RunPrune(from time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	pruneStart := time.Now()
 
-	c.prune(&from)
+	c.shardPools.Range(func(_, value any) bool {
+		shard, ok := value.(*shard)
+		if !ok {
+			panic("cache: internal error: bad shard type in pool")
+		}
+
+		shard.mu.Lock()
+		shard.prune(&from, c.conf)
+		shard.mu.Unlock()
+
+		return true
+	})
+	c.pruneRuns.Add(1)
+	c.pruningNanos.Add(uint64(time.Since(pruneStart))) //nolint:gosec // duration is non-negative and bounded.
 }
 
 // PruneCounts returns the cumulative prune-run count and pruned-item count.
 func (c *Cache) PruneCounts() (int64, int64) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	var pruned int64
 
-	return c.stats.Prunes, c.stats.Pruned
+	c.shardPools.Range(func(_, value any) bool {
+		shard, ok := value.(*shard)
+		if !ok {
+			panic("cache: internal error: bad shard type in pool")
+		}
+
+		shard.mu.RLock()
+		pruned += shard.stats.Pruned
+		shard.mu.RUnlock()
+
+		return true
+	})
+
+	return c.pruneRuns.Load(), pruned
 }

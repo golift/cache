@@ -34,19 +34,28 @@ type Config struct {
 	// Above minimumAccuracy, a ticker updates a shared clock at this interval
 	// so hot paths can avoid calling time.Now() every time (capped at 1 hour).
 	RequestAccuracy time.Duration
+	// Shards is the number of independent backing maps (hash partitions).
+	// 0 or 1 means a single shard (default). Values greater than 1 spread keys
+	// across shards using a fast deterministic hash of the key modulo Shards.
+	// The maximum enforced value is maxShards.
+	Shards int
 }
 
 // Cache provides methods to get, save and delete a key (with data) from cache.
 type Cache struct {
-	mu      sync.RWMutex
-	stopMu  sync.Mutex // serializes Start/Stop (avoids races with wg.Add/Wait).
-	cache   map[string]*Item
-	stats   Stats
-	running atomic.Bool
-	conf    *Config
+	mu         sync.RWMutex
+	stopMu     sync.Mutex // serializes Start/Stop (avoids races with wg.Add/Wait).
+	shardCount uint32
+	shardPools sync.Map // uint32 shard index -> *shard
+	running    atomic.Bool
+	conf       *Config
 	// now is updated by the background goroutine when RequestAccuracy is above
 	// minimumAccuracy; otherwise cachedNow uses time.Now() per request.
 	now atomic.Pointer[time.Time]
+
+	// Global prune cycle counters (one increment per full prune pass over all shards).
+	pruneRuns    atomic.Int64
+	pruningNanos atomic.Uint64
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -84,6 +93,7 @@ const (
 	defaultPruneDur  = 18 * time.Minute       // 18m is probably not what you want. (set PruneAfter if 0)
 	minimumAccuracy  = 100 * time.Millisecond // Below or equal: no polled clock; use time.Now() per request.
 	maximumAccuracy  = time.Hour              // Good for slow-use cache.
+	maxShards        = 65536                  // If you need more, make another cache pool.
 )
 
 const (
@@ -135,6 +145,7 @@ func newCache(conf *Config) *Cache {
 	}
 
 	cache := &Cache{conf: conf}
+	cache.initShards()
 	now := time.Now()
 	// Initialize this here so cacheNow() doesn't panic.
 	cache.now.Store(&now)
@@ -161,7 +172,7 @@ func (c *Cache) StartWithContext(ctx context.Context, clean bool) {
 // If clean is true it will clean up memory usage and delete the cache.
 // Pass clean if the app will continue to run, and you don't need to re-use the cache data.
 func (c *Cache) Stop(clean bool) {
-	c.stopMu.Lock() // serializes Start/Stop (avoids races with wg.Go()).
+	c.stopMu.Lock() // serializes Start/Stop (avoids races with wg.Add/Wait).
 	if !c.running.Load() {
 		c.stopMu.Unlock()
 		return
@@ -183,24 +194,28 @@ func (c *Cache) Stop(clean bool) {
 // This library will not read or write to the item after it's returned.
 // Calling this procedure after calling Stop() or cancelling the context produces a panic.
 func (c *Cache) Get(requestKey string) *Item {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.areWeRunning()
 
-	c.areWeRunning() // this will panic if the cache is not running.
+	shardInst := c.shardFor(requestKey)
+	shardInst.mu.Lock()
+	defer shardInst.mu.Unlock()
 
-	return c.get(requestKey, c.cachedNow())
+	return shardInst.get(requestKey, c.cachedNow())
 }
 
 // Save saves an item, and returns true if it already existed (got updated).
 // This procedure does NOT update hit/miss stats like cache.Get() does.
 // Calling this procedure after calling Stop() or cancelling the context produces a panic.
 func (c *Cache) Save(requestKey string, data any, opts Options) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.areWeRunning()
 
-	c.areWeRunning() // this will panic if the cache is not running.
+	now := c.cachedNow()
 
-	return c.save(requestKey, data, opts, c.cachedNow(), false) != nil
+	shardInst := c.shardFor(requestKey)
+	shardInst.mu.Lock()
+	defer shardInst.mu.Unlock()
+
+	return shardInst.save(requestKey, data, opts, now, false) != nil
 }
 
 // Update saves an item, and returns a copy of the previously saved item.
@@ -209,23 +224,27 @@ func (c *Cache) Save(requestKey string, data any, opts Options) bool {
 // Check the item for nil to determine if it existed prior to this call.
 // Calling this procedure after calling Stop() or cancelling the context produces a panic.
 func (c *Cache) Update(requestKey string, data any, opts Options) *Item {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.areWeRunning()
 
-	c.areWeRunning() // this will panic if the cache is not running.
+	now := c.cachedNow()
 
-	return c.save(requestKey, data, opts, c.cachedNow(), true)
+	shardInst := c.shardFor(requestKey)
+	shardInst.mu.Lock()
+	defer shardInst.mu.Unlock()
+
+	return shardInst.save(requestKey, data, opts, now, true)
 }
 
 // Delete removes an item and returns true if it existed.
 // Calling this procedure after calling Stop() or cancelling the context produces a panic.
 func (c *Cache) Delete(requestKey string) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.areWeRunning()
 
-	c.areWeRunning() // this will panic if the cache is not running.
+	shardInst := c.shardFor(requestKey)
+	shardInst.mu.Lock()
+	defer shardInst.mu.Unlock()
 
-	return c.delete(requestKey) != nil
+	return shardInst.delete(requestKey) != nil
 }
 
 // List returns a copy of the in-memory cache. The map list will never be nil.
@@ -240,9 +259,28 @@ func (c *Cache) List() map[string]*Item {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	c.areWeRunning() // this will panic if the cache is not running.
+	c.areWeRunning()
 
-	return c.listCopy()
+	out := make(map[string]*Item)
+
+	c.shardPools.Range(func(_, value any) bool {
+		shardInst, ok := value.(*shard)
+		if !ok {
+			panic("cache: internal error: bad shard type in pool")
+		}
+
+		shardInst.mu.RLock()
+
+		for key, item := range shardInst.items {
+			out[key] = item.copy()
+		}
+
+		shardInst.mu.RUnlock()
+
+		return true
+	})
+
+	return out
 }
 
 func (c *Cache) startWithContext(ctx context.Context, clean bool) {

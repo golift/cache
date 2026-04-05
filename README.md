@@ -7,12 +7,15 @@
 
 This module provides a small in-memory key/value cache for Go.
 
-- **Concurrency:** A `sync.RWMutex` protects the map and write-heavy operations (`Get`, `Save`, `Update`, `Delete`).
-  Read-mostly work such as `List` and `Stats` uses a read lock when possible.
+- **Concurrency:** Each **shard** has its own `sync.RWMutex` over a `map[string]*Item`. `Get`, `Save`, `Update`, and `Delete`
+  lock only the shard for that key. Shards are looked up via `sync.Map` (`uint32` index → shard), populated at startup when
+  `Config.Shards` is greater than 1. `List` and `Stats` iterate all shards (read locks per shard).
 - **Background work:** By default each operation uses `time.Now()` directly. If `RequestAccuracy` is set above
   100ms, one goroutine also refreshes a shared clock on that interval (fewer `time.Now()` calls on hot paths).
   The optional pruner runs on `PruneInterval`.
 - **Metrics:** Hit/miss and other counters are exposed for `expvar` or your own metrics pipeline.
+- **Sharding:** Optional `Config.Shards` (default 1) partitions keys across multiple maps using FNV-1a 64-bit `hash(key) % Shards`
+  (capped at 65536). Use this to reduce mutex contention under high concurrency.
 
 Items can be marked prunable or not. Prunable entries are removed after they have not been retrieved within `PruneAfter`.
 Non-prunable entries use a separate maximum idle duration (`MaxUnused`).

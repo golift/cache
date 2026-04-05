@@ -3,6 +3,7 @@ package cache_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -34,6 +35,29 @@ func pruneConfig() cache.Config {
 }
 
 const pruneWait = 2500 * time.Millisecond
+
+// TestShards_MultiplePoolsRoundTrip verifies Config.Shards spreads keys across
+// independent maps while preserving aggregate size and List consistency.
+func TestShards_MultiplePoolsRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	store := cache.New(cache.Config{Shards: 8})
+	defer store.Stop(true)
+
+	for i := range 64 {
+		key := fmt.Sprintf("k-%d", i)
+		store.Save(key, i, cache.Options{})
+	}
+
+	stats := store.Stats()
+	if stats.Size != 64 {
+		t.Fatalf("Stats().Size: want 64, got %d", stats.Size)
+	}
+
+	if len(store.List()) != 64 {
+		t.Fatalf("List len: want 64, got %d", len(store.List()))
+	}
+}
 
 // ---- Regression Tests -------------------------------------------------------
 
