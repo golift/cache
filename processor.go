@@ -30,10 +30,7 @@ func (c *Cache) start(ctx context.Context) {
 	}
 
 	c.mu.Lock()
-	if c.cache == nil {
-		c.cache = make(map[string]*Item)
-	}
-
+	c.ensureShardMaps()
 	c.mu.Unlock()
 
 	ctx, c.cancel = context.WithCancel(ctx)
@@ -69,103 +66,24 @@ func (c *Cache) backgroundLoop(ctx context.Context) {
 		case update := <-timer.C:
 			c.now.Store(&update)
 		case now = <-pruner.C:
-			c.mu.Lock()
-			c.prune(&now)
-			c.stats.Pruning.Duration += time.Since(now)
-			c.mu.Unlock()
+			pruneStart := time.Now()
+
+			c.shardPools.Range(func(_, value any) bool {
+				shard, ok := value.(*shard)
+				if !ok {
+					panic("cache: internal error: bad shard type in pool")
+				}
+
+				shard.mu.Lock()
+				shard.prune(&now, c.conf)
+				shard.mu.Unlock()
+
+				return true
+			})
+			c.pruneRuns.Add(1)
+			c.pruningNanos.Add(uint64(time.Since(pruneStart))) //nolint:gosec // duration is non-negative and bounded.
 		}
 	}
-}
-
-// clean it up and free some memory.
-func (c *Cache) clean() {
-	for k := range c.cache {
-		c.cache[k].opts = nil
-		c.cache[k].Data = nil
-		c.cache[k] = nil
-		delete(c.cache, k)
-	}
-
-	c.cache = nil
-}
-
-// prune (optionally) runs at an interval inside the main thread.
-// Caller must hold c.mu (write lock).
-func (c *Cache) prune(from *time.Time) {
-	c.stats.Prunes++
-
-	for key, item := range c.cache {
-		if last := from.Sub(item.Last); last > c.conf.MaxUnused ||
-			(item.opts.Prune && last > c.conf.PruneAfter) ||
-			(!item.opts.Expire.IsZero() && from.After(item.opts.Expire)) {
-			c.stats.Pruned++
-			delete(c.cache, key)
-		}
-	}
-}
-
-// get returns a copy of an item. Caller must hold c.mu (write lock).
-func (c *Cache) get(key string, now time.Time) *Item {
-	if item := c.cache[key]; item != nil {
-		c.stats.Hits++
-		item.Hits++
-		item.Last = now
-
-		return item.copy()
-	}
-
-	c.stats.Misses++
-
-	return nil
-}
-
-// save stores an item. Caller must hold c.mu (write lock).
-func (c *Cache) save(key string, data any, opts Options, now time.Time, replace bool) *Item {
-	var item *Item
-
-	if replace {
-		item = c.get(key, now) // Apply stats to this Update() request.
-	} else {
-		item = c.cache[key] // Avoid hit/miss stats on regular Save().
-	}
-
-	if item != nil {
-		c.stats.Updates++
-	} else {
-		c.stats.Saves++
-	}
-
-	optsCopy := opts
-	c.cache[key] = &Item{Data: data, Time: now, Last: now, opts: &optsCopy}
-
-	return item // Not a copy, but also no longer in cache.
-}
-
-// listCopy returns a shallow copy of all items. Caller must hold c.mu (read or write lock).
-func (c *Cache) listCopy() map[string]*Item {
-	items := make(map[string]*Item)
-	for key, item := range c.cache {
-		items[key] = item.copy()
-	}
-
-	return items
-}
-
-// delete removes a key. Caller must hold c.mu (write lock).
-func (c *Cache) delete(key string) *Item {
-	item := c.cache[key]
-	if item == nil {
-		c.stats.DelMiss++
-		return nil
-	}
-
-	// item isn't used, but future proof this and avoid leaking
-	// this pointer in case item is returned out of the module.
-	item.opts = nil
-	c.stats.Deletes++
-	delete(c.cache, key)
-
-	return item // not copied.
 }
 
 // copy an item so it can be returned to the caller.

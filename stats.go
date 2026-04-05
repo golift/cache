@@ -30,11 +30,36 @@ func (c *Cache) Stats() *Stats {
 
 	c.areWeRunning() // this will panic if the cache is not running.
 
-	stats := c.stats
-	stats.Gets = stats.Hits + stats.Misses
-	stats.Size = int64(len(c.cache))
+	var total Stats
 
-	return &stats
+	var size int64
+
+	c.shardPools.Range(func(_, value any) bool {
+		shard, ok := value.(*shard)
+		if !ok {
+			panic("cache: internal error: bad shard type in pool")
+		}
+
+		shard.mu.RLock()
+		total.Hits += shard.stats.Hits
+		total.Misses += shard.stats.Misses
+		total.Saves += shard.stats.Saves
+		total.Updates += shard.stats.Updates
+		total.Deletes += shard.stats.Deletes
+		total.DelMiss += shard.stats.DelMiss
+		total.Pruned += shard.stats.Pruned
+		size += int64(len(shard.items))
+		shard.mu.RUnlock()
+
+		return true
+	})
+
+	total.Prunes = c.pruneRuns.Load()
+	total.Pruning.Duration = time.Duration(c.pruningNanos.Load()) //nolint:gosec // nanoseconds from time.Since.
+	total.Gets = total.Hits + total.Misses
+	total.Size = size
+
+	return &total
 }
 
 // ExpStats returns the stats inside of an interface{} so expvar can consume it.
