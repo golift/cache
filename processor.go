@@ -92,7 +92,7 @@ func (i *Item) copy() *Item {
 	return &Item{
 		Data: i.Data,
 		Time: i.Time,
-		Last: i.Last,
-		Hits: i.Hits,
+		Last: time.Unix(0, i.last.Load()),
+		Hits: i.hits.Load(),
 	}
 }

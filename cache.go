@@ -66,12 +66,18 @@ type Cache struct {
 //   - Time is when the item was saved (or updated) in cache.
 //   - Last is the time when the last cache get for this item occurred.
 //   - Hits is the number of cache gets for this key.
+//
+// Items held inside the cache use atomics for Hits/last access so Get can use a read lock;
+// values returned from Get and List are snapshots with plain fields.
 type Item struct {
 	Data any       `json:"data"`
 	Time time.Time `json:"created"`
-	Last time.Time `json:"lastAccess"`
-	Hits int64     `json:"hits"`
+	Last time.Time `json:"lastAccess"` // Copied from 'last' on read.
+	Hits int64     `json:"hits"`       // Copied from 'hits' on read.
+
 	opts *Options
+	hits atomic.Int64
+	last atomic.Int64 // unix nano time.
 }
 
 // Options are optional, and may be provided when saving a cached item.
@@ -197,8 +203,8 @@ func (c *Cache) Get(requestKey string) *Item {
 	c.areWeRunning()
 
 	shardInst := c.shardFor(requestKey)
-	shardInst.mu.Lock()
-	defer shardInst.mu.Unlock()
+	shardInst.mu.RLock()
+	defer shardInst.mu.RUnlock()
 
 	return shardInst.get(requestKey, c.cachedNow())
 }

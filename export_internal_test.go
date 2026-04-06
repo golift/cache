@@ -18,7 +18,11 @@ func (c *Cache) AddTestItem(key string, lastAccess time.Time, opts Options) {
 	defer shardInst.mu.Unlock()
 
 	optsCopy := opts
-	shardInst.items[key] = &Item{Data: "test", Time: lastAccess, Last: lastAccess, opts: &optsCopy}
+	it := &Item{Data: "test", Time: lastAccess, Last: lastAccess, opts: &optsCopy}
+	it.last.Store(lastAccess.UnixNano())
+	it.hits.Store(0)
+
+	shardInst.items[key] = it
 }
 
 // HasKey reports whether a key currently exists in the cache map.
@@ -63,9 +67,7 @@ func (c *Cache) PruneCounts() (int64, int64) {
 			panic("cache: internal error: bad shard type in pool")
 		}
 
-		shard.mu.RLock()
-		pruned += shard.stats.Pruned
-		shard.mu.RUnlock()
+		pruned += shard.pruned.Load()
 
 		return true
 	})

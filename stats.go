@@ -23,6 +23,7 @@ type Duration struct {
 }
 
 // Stats returns the cache statistics.
+// Counters are read from atomics; under heavy load snapshots can be briefly inconsistent between fields.
 // This will never be nil, and concurrent access is OK.
 func (c *Cache) Stats() *Stats {
 	c.mu.RLock()
@@ -32,24 +33,20 @@ func (c *Cache) Stats() *Stats {
 
 	var total Stats
 
-	var size int64
-
 	c.shardPools.Range(func(_, value any) bool {
 		shard, ok := value.(*shard)
 		if !ok {
 			panic("cache: internal error: bad shard type in pool")
 		}
 
-		shard.mu.RLock()
-		total.Hits += shard.stats.Hits
-		total.Misses += shard.stats.Misses
-		total.Saves += shard.stats.Saves
-		total.Updates += shard.stats.Updates
-		total.Deletes += shard.stats.Deletes
-		total.DelMiss += shard.stats.DelMiss
-		total.Pruned += shard.stats.Pruned
-		size += int64(len(shard.items))
-		shard.mu.RUnlock()
+		total.Hits += shard.hits.Load()
+		total.Misses += shard.misses.Load()
+		total.Saves += shard.saves.Load()
+		total.Updates += shard.updates.Load()
+		total.Deletes += shard.deletes.Load()
+		total.DelMiss += shard.delmiss.Load()
+		total.Pruned += shard.pruned.Load()
+		total.Size += int64(len(shard.items))
 
 		return true
 	})
@@ -57,7 +54,6 @@ func (c *Cache) Stats() *Stats {
 	total.Prunes = c.pruneRuns.Load()
 	total.Pruning.Duration = time.Duration(c.pruningNanos.Load()) //nolint:gosec // nanoseconds from time.Since.
 	total.Gets = total.Hits + total.Misses
-	total.Size = size
 
 	return &total
 }
