@@ -267,11 +267,11 @@ func (c *Cache) Save(requestKey string, data any, opts Options) bool {
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 
-	return shard.save(requestKey, data, opts, now, false) != nil
+	return shard.save(requestKey, data, opts, now)
 }
 
 // Update saves an item, and returns a copy of the previously saved item.
-// If you do not need the previous item, use cache.Save() instead.
+// If you do not need the previous item, use Save() instead (no prior snapshot allocation).
 // This procedure updates hit/miss stats like cache.Get() does.
 // Check the item for nil to determine if it existed prior to this call.
 // Calling this procedure after calling Stop() or cancelling the context produces a panic.
@@ -284,7 +284,7 @@ func (c *Cache) Update(requestKey string, data any, opts Options) *Item {
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 
-	return shard.save(requestKey, data, opts, now, true)
+	return shard.update(requestKey, data, opts, now)
 }
 
 // Delete removes an item and returns true if it existed.

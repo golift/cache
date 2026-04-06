@@ -17,6 +17,9 @@ const originalData = "original"
 // testHello is a shared payload for Get/GetInto/GetRaw tests (goconst).
 const testHello = "hello"
 
+// testUpdatedValue is used by Update tests (goconst).
+const testUpdatedValue = "new"
+
 // assertEqual is a tiny typed helper to avoid a testify dependency.
 func assertEqual[T comparable](t *testing.T, name string, want, got T) {
 	t.Helper()
@@ -470,7 +473,7 @@ func TestUpdate_NewKey(t *testing.T) {
 	store := cache.New(cache.Config{})
 	defer store.Stop(true)
 
-	prev := store.Update("k", "new", cache.Options{})
+	prev := store.Update("k", testUpdatedValue, cache.Options{})
 	if prev != nil {
 		t.Fatalf("Update new key: expected nil, got %+v", prev)
 	}
@@ -487,7 +490,7 @@ func TestUpdate_ExistingKey(t *testing.T) {
 
 	store.Save("k", originalData, cache.Options{})
 
-	prev := store.Update("k", "new", cache.Options{})
+	prev := store.Update("k", testUpdatedValue, cache.Options{})
 	if prev == nil {
 		t.Fatal("Update existing key: expected previous item, got nil")
 	}
@@ -502,8 +505,8 @@ func TestUpdate_ExistingKey(t *testing.T) {
 	assertEqual(t, "Hits", int64(1), stats.Hits)
 
 	item := store.Get("k")
-	if item == nil || item.Data != "new" {
-		t.Fatalf("after Update expected 'new', got %v", item)
+	if item == nil || item.Data != testUpdatedValue {
+		t.Fatalf("after Update expected %q, got %v", testUpdatedValue, item)
 	}
 }
 

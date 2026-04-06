@@ -20,6 +20,13 @@ type shard struct {
 	pruned  atomic.Int64
 }
 
+// bumpLookupHit records a successful lookup (same counters as a cache Get hit). Caller must hold s.mu.
+func (s *shard) bumpLookupHit(item *Item, now time.Time) {
+	s.hits.Add(1)
+	item.hits.Add(1)
+	item.last.Store(now.UnixNano())
+}
+
 // get returns a copy of an item. Caller must hold sh.mu for reading (RLock) or writing (Lock).
 func (s *shard) get(key string, now time.Time) *Item {
 	item := s.items[key]
@@ -28,9 +35,7 @@ func (s *shard) get(key string, now time.Time) *Item {
 		return nil
 	}
 
-	s.hits.Add(1)
-	item.hits.Add(1)
-	item.last.Store(now.UnixNano())
+	s.bumpLookupHit(item, now)
 
 	return item.copy(nil) // nil means makes new *Item's.
 }
@@ -43,9 +48,7 @@ func (s *shard) getInto(key string, now time.Time, dst *Item) bool {
 		return false
 	}
 
-	s.hits.Add(1)
-	item.hits.Add(1)
-	item.last.Store(now.UnixNano())
+	s.bumpLookupHit(item, now)
 	item.copy(dst) // copy the cached item into the caller's *Item.
 
 	return true
@@ -59,9 +62,7 @@ func (s *shard) getRaw(key string, now time.Time) (any, bool) {
 		return nil, false
 	}
 
-	s.hits.Add(1)
-	item.hits.Add(1)
-	item.last.Store(now.UnixNano())
+	s.bumpLookupHit(item, now)
 
 	return item.Data, true
 }
@@ -77,39 +78,39 @@ func placeItem(item *Item, data any, opts Options, now time.Time) *Item {
 	return item // send it back out for chaining.
 }
 
-// save stores an item. Caller must hold sh.mu (write lock).
-func (s *shard) save(key string, data any, opts Options, now time.Time, replace bool) *Item {
-	item := s.items[key] // Get existing item out of the map.
-
-	if replace { // Replace the existing item (update request).
-		if item == nil {
-			s.misses.Add(1)
-			s.saves.Add(1)
-			s.items[key] = placeItem(&Item{}, data, opts, now)
-
-			return nil
-		}
-
-		s.updates.Add(1)
-		s.hits.Add(1)
-		item.hits.Add(1)
-		item.last.Store(now.UnixNano())
-		out := item.copy(nil) // get stats before updating the item. nil means makes new *Item
-		placeItem(item, data, opts, now)
-
-		return out
-	}
-
+// save inserts or overwrites without changing get hit/miss counters. Returns true if the key
+// already existed. Caller must hold s.mu (write lock).
+func (s *shard) save(key string, data any, opts Options, now time.Time) bool {
+	item := s.items[key]
 	if item == nil {
 		s.saves.Add(1)
 		s.items[key] = placeItem(&Item{}, data, opts, now)
 
-		return nil
+		return false
 	}
 
 	s.updates.Add(1)
+	placeItem(item, data, opts, now)
 
-	return placeItem(item, data, opts, now)
+	return true
+}
+
+// update replaces the value for key. For a new key it counts a get miss plus a save and returns nil.
+// For an existing key it applies the same lookup accounting as get(), returns a detached copy of
+// the entry as it was after that accounting, then stores the new value. Caller must hold s.mu.
+func (s *shard) update(key string, data any, opts Options, now time.Time) *Item {
+	item := s.get(key, now)
+	if item == nil {
+		s.saves.Add(1)                                     // record stats for new item.
+		s.items[key] = placeItem(&Item{}, data, opts, now) // add new item to the shard.
+
+		return nil
+	}
+
+	s.updates.Add(1)                         // record stats for update.
+	placeItem(s.items[key], data, opts, now) // update the item in the shard.
+
+	return item
 }
 
 // delete removes a key. Caller must hold sh.mu (write lock).
