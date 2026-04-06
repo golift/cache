@@ -35,29 +35,50 @@ func (s *shard) get(key string, now time.Time) *Item {
 	return item.copy()
 }
 
+func placeItem(item *Item, data any, opts Options, now time.Time) *Item {
+	item.Data = data
+	item.Time = now
+	item.Last = now
+	item.opts = opts
+	item.last.Store(now.UnixNano())
+	item.hits.Store(0)
+
+	return item // send it back out for chaining.
+}
+
 // save stores an item. Caller must hold sh.mu (write lock).
 func (s *shard) save(key string, data any, opts Options, now time.Time, replace bool) *Item {
-	var item *Item
+	item := s.items[key] // Get existing item out of the map.
 
-	if replace {
-		item = s.get(key, now) // Apply stats to this Update() request.
-	} else {
-		item = s.items[key] // Avoid hit/miss stats on regular Save().
-	}
+	if replace { // Replace the existing item (update request).
+		if item == nil {
+			s.misses.Add(1)
+			s.saves.Add(1)
+			s.items[key] = placeItem(&Item{}, data, opts, now)
 
-	if item != nil {
+			return nil
+		}
+
 		s.updates.Add(1)
-	} else {
-		s.saves.Add(1)
+		s.hits.Add(1)
+		item.hits.Add(1)
+		item.last.Store(now.UnixNano())
+		out := item.copy() // get stats before updating the item.
+		placeItem(item, data, opts, now)
+
+		return out
 	}
 
-	optsCopy := opts
-	// Create a new item and return the old/previously stored item directly.
-	s.items[key] = &Item{Data: data, Time: now, Last: now, opts: &optsCopy}
-	s.items[key].last.Store(now.UnixNano())
-	s.items[key].hits.Store(0)
-	// replace=true (Update): item is a snapshot from get. replace=false: item is the prior *Item if any (not copied).
-	return item
+	if item == nil {
+		s.saves.Add(1)
+		s.items[key] = placeItem(&Item{}, data, opts, now)
+
+		return nil
+	}
+
+	s.updates.Add(1)
+
+	return placeItem(item, data, opts, now)
 }
 
 // delete removes a key. Caller must hold sh.mu (write lock).
@@ -68,7 +89,7 @@ func (s *shard) delete(key string) *Item {
 		return nil
 	}
 
-	item.opts = nil
+	item.opts = Options{}
 
 	s.deletes.Add(1)
 	delete(s.items, key)
@@ -92,7 +113,7 @@ func (s *shard) prune(from *time.Time, conf *Config) {
 // clean clears all items in this shard. Caller must hold sh.mu (write lock).
 func (s *shard) clean() {
 	for k := range s.items {
-		s.items[k].opts = nil
+		s.items[k].opts = Options{}
 		s.items[k].Data = nil
 		s.items[k] = nil
 		delete(s.items, k)

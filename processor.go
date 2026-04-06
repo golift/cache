@@ -68,18 +68,12 @@ func (c *Cache) backgroundLoop(ctx context.Context) {
 		case now = <-pruner.C:
 			pruneStart := time.Now()
 
-			c.shardPools.Range(func(_, value any) bool {
-				shard, ok := value.(*shard)
-				if !ok {
-					panic("cache: internal error: bad shard type in pool")
-				}
-
+			for _, shard := range c.shards {
 				shard.mu.Lock()
 				shard.prune(&now, c.conf)
 				shard.mu.Unlock()
+			}
 
-				return true
-			})
 			c.pruneRuns.Add(1)
 			// One nanosecond to avoid 0 duration when the prune pass is extremely fast and causes tests to fail on Windows.
 			c.pruningNanos.Add(uint64(time.Since(pruneStart) + 1)) //nolint:gosec // duration is non-negative and bounded.
