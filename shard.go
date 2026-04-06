@@ -52,10 +52,11 @@ func (sh *shard) save(key string, data any, opts Options, now time.Time, replace
 	}
 
 	optsCopy := opts
+	// Create a new item and return the old/previously stored item directly.
 	sh.items[key] = &Item{Data: data, Time: now, Last: now, opts: &optsCopy}
 	sh.items[key].last.Store(now.UnixNano())
 	sh.items[key].hits.Store(0)
-	// replace=true (Update): prev is a snapshot from get. replace=false: prev is the prior *Item if any (not copied).
+	// replace=true (Update): item is a snapshot from get. replace=false: item is the prior *Item if any (not copied).
 	return item
 }
 
