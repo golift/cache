@@ -7,9 +7,11 @@
 
 This module provides a small in-memory key/value cache for Go.
 
-- **Concurrency:** Each **shard** has its own `sync.RWMutex` over a `map[string]*Item`. `Get`, `Save`, `Update`, and `Delete`
-  lock only the shard for that key. Shards are looked up via `sync.Map` (`uint32` index → shard), populated at startup when
-  `Config.Shards` is greater than 1. `List` and `Stats` iterate all shards (read locks per shard).
+- **Concurrency:** Each **shard** has its own `sync.RWMutex` over a `map[string]*Item`. `Get` takes a **read** lock on that
+  shard; `Save`, `Update`, `Delete`, and the pruner take the **write** lock. Hit/miss and per-item access metadata use atomics
+  so reads do not serialize on the mutex. Shards are looked up via `sync.Map` (`uint32` index → shard), populated at startup
+  when `Config.Shards` is greater than 1. `List` takes read locks per shard; `Stats` aggregates atomic counters and per-shard
+  item counts (under contention, counter snapshots can be briefly inconsistent across fields).
 - **Background work:** By default each operation uses `time.Now()` directly. If `RequestAccuracy` is set above
   100ms, one goroutine also refreshes a shared clock on that interval (fewer `time.Now()` calls on hot paths).
   The optional pruner runs on `PruneInterval`.

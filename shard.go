@@ -2,6 +2,7 @@ package cache
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -9,22 +10,29 @@ import (
 type shard struct {
 	mu    sync.RWMutex
 	items map[string]*Item
-	stats Stats
+	// Counters are atomics so Get can use RLock while increments stay correct.
+	hits    atomic.Int64
+	misses  atomic.Int64
+	saves   atomic.Int64
+	updates atomic.Int64
+	deletes atomic.Int64
+	delmiss atomic.Int64
+	pruned  atomic.Int64
 }
 
-// get returns a copy of an item. Caller must hold sh.mu (write lock).
+// get returns a copy of an item. Caller must hold sh.mu for reading (RLock) or writing (Lock).
 func (sh *shard) get(key string, now time.Time) *Item {
-	if item := sh.items[key]; item != nil {
-		sh.stats.Hits++
-		item.Hits++
-		item.Last = now
-
-		return item.copy()
+	item := sh.items[key]
+	if item == nil {
+		sh.misses.Add(1)
+		return nil
 	}
 
-	sh.stats.Misses++
+	sh.hits.Add(1)
+	item.hits.Add(1)
+	item.last.Store(now.UnixNano())
 
-	return nil
+	return item.copy()
 }
 
 // save stores an item. Caller must hold sh.mu (write lock).
@@ -38,40 +46,44 @@ func (sh *shard) save(key string, data any, opts Options, now time.Time, replace
 	}
 
 	if item != nil {
-		sh.stats.Updates++
+		sh.updates.Add(1)
 	} else {
-		sh.stats.Saves++
+		sh.saves.Add(1)
 	}
 
 	optsCopy := opts
+	// Create a new item and return the old/previously stored item directly.
 	sh.items[key] = &Item{Data: data, Time: now, Last: now, opts: &optsCopy}
-
-	return item // Not a copy, but also no longer in cache.
+	sh.items[key].last.Store(now.UnixNano())
+	sh.items[key].hits.Store(0)
+	// replace=true (Update): item is a snapshot from get. replace=false: item is the prior *Item if any (not copied).
+	return item
 }
 
 // delete removes a key. Caller must hold sh.mu (write lock).
 func (sh *shard) delete(key string) *Item {
 	item := sh.items[key]
 	if item == nil {
-		sh.stats.DelMiss++
-
+		sh.delmiss.Add(1)
 		return nil
 	}
 
 	item.opts = nil
-	sh.stats.Deletes++
-	delete(sh.items, key)
 
-	return item // not copied.
+	sh.deletes.Add(1)
+	delete(sh.items, key)
+	// item is not copied, and no longer in cache.
+	return item
 }
 
 // prune removes eligible keys. Caller must hold sh.mu (write lock).
 func (sh *shard) prune(from *time.Time, conf *Config) {
 	for key, item := range sh.items {
-		if last := from.Sub(item.Last); last > conf.MaxUnused ||
+		lastTime := time.Unix(0, item.last.Load())
+		if last := from.Sub(lastTime); last > conf.MaxUnused ||
 			(item.opts.Prune && last > conf.PruneAfter) ||
 			(!item.opts.Expire.IsZero() && from.After(item.opts.Expire)) {
-			sh.stats.Pruned++
+			sh.pruned.Add(1)
 			delete(sh.items, key)
 		}
 	}

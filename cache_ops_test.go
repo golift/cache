@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -56,6 +57,72 @@ func TestShards_MultiplePoolsRoundTrip(t *testing.T) {
 
 	if len(store.List()) != 64 {
 		t.Fatalf("List len: want 64, got %d", len(store.List()))
+	}
+}
+
+// TestConcurrentGetSameKey exercises many parallel Gets on one key (RLock + atomics).
+func TestConcurrentGetSameKey(t *testing.T) {
+	t.Parallel()
+
+	store := cache.New(cache.Config{})
+	defer store.Stop(true)
+
+	const key = "shared"
+	store.Save(key, "v", cache.Options{})
+
+	const concurrentGets = 500
+
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(concurrentGets)
+
+	for range concurrentGets {
+		go func() {
+			defer waitGroup.Done()
+
+			if item := store.Get(key); item == nil || item.Data != "v" {
+				t.Error("expected cache hit with saved data")
+			}
+		}()
+	}
+
+	waitGroup.Wait()
+
+	stats := store.Stats()
+	if stats.Hits < concurrentGets {
+		t.Fatalf("Stats().Hits: want >= %d, got %d", concurrentGets, stats.Hits)
+	}
+}
+
+// TestConcurrentGetSameKey_Sharded is the same stress with multiple shards.
+func TestConcurrentGetSameKey_Sharded(t *testing.T) {
+	t.Parallel()
+
+	store := cache.New(cache.Config{Shards: 16})
+	defer store.Stop(true)
+
+	const key = "only-one-key"
+	store.Save(key, "v", cache.Options{})
+
+	const concurrentGets = 500
+
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(concurrentGets)
+
+	for range concurrentGets {
+		go func() {
+			defer waitGroup.Done()
+
+			if item := store.Get(key); item == nil || item.Data != "v" {
+				t.Error("expected cache hit with saved data")
+			}
+		}()
+	}
+
+	waitGroup.Wait()
+
+	stats := store.Stats()
+	if stats.Hits < concurrentGets {
+		t.Fatalf("Stats().Hits: want >= %d, got %d", concurrentGets, stats.Hits)
 	}
 }
 
