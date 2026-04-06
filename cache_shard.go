@@ -22,8 +22,9 @@ func (c *Cache) initShardsLocked() {
 	n := normalizeShardCount(c.conf.Shards)
 	c.shardCount = uint32(n) //nolint:gosec // n is clamped to maxShards (65536).
 
-	for i := range int(c.shardCount) {
-		c.shardPools.Store(uint32(i), &shard{items: make(map[string]*Item)})
+	c.shards = make([]*shard, c.shardCount)
+	for i := range c.shards {
+		c.shards[i] = &shard{items: make(map[string]*Item)}
 	}
 }
 
@@ -34,12 +35,7 @@ func (c *Cache) ensureShardMaps() {
 		return
 	}
 
-	c.shardPools.Range(func(_, value any) bool {
-		shard, ok := value.(*shard)
-		if !ok {
-			panic("cache: internal error: bad shard type in pool")
-		}
-
+	for _, shard := range c.shards {
 		shard.mu.Lock()
 
 		if shard.items == nil {
@@ -47,9 +43,7 @@ func (c *Cache) ensureShardMaps() {
 		}
 
 		shard.mu.Unlock()
-
-		return true
-	})
+	}
 }
 
 // shardFor returns the shard that owns key. Each shard is a separate map+mutex pair, so
@@ -79,16 +73,13 @@ func (c *Cache) shardFor(key string) *shard {
 		idx = uint32(hash % uint64(c.shardCount)) //nolint:gosec // remainder is < shardCount (<= maxShards).
 	}
 
-	// At startup we stored shard 0..shardCount-1 in shardPools; Load is the hot-path lookup.
-	value, loaded := c.shardPools.Load(idx)
-	if !loaded {
-		panic("cache: internal error: missing shard")
+	if int(idx) >= len(c.shards) {
+		panic("cache: internal error: shard index out of range")
 	}
 
-	// sync.Map returns interface{}; assert to *shard (only type we ever Store).
-	shard, ok := value.(*shard)
-	if !ok {
-		panic("cache: internal error: bad shard type")
+	shard := c.shards[idx]
+	if shard == nil {
+		panic("cache: internal error: missing shard")
 	}
 
 	return shard
@@ -96,16 +87,9 @@ func (c *Cache) shardFor(key string) *shard {
 
 // clean clears all items in all shards. Caller must hold c.mu (write lock).
 func (c *Cache) clean() {
-	c.shardPools.Range(func(_, value any) bool {
-		shard, ok := value.(*shard)
-		if !ok {
-			panic("cache: internal error: bad shard type in pool")
-		}
-
+	for _, shard := range c.shards {
 		shard.mu.Lock()
 		shard.clean()
 		shard.mu.Unlock()
-
-		return true
-	})
+	}
 }

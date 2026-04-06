@@ -46,7 +46,7 @@ type Cache struct {
 	mu         sync.RWMutex
 	stopMu     sync.Mutex // serializes Start/Stop (avoids races with wg.Add/Wait).
 	shardCount uint32
-	shardPools sync.Map // uint32 shard index -> *shard
+	shards     []*shard // index i holds partition i; length is shardCount.
 	running    atomic.Bool
 	conf       *Config
 	// now is updated by the background goroutine when RequestAccuracy is above
@@ -75,7 +75,7 @@ type Item struct {
 	Last time.Time `json:"lastAccess"` // Copied from 'last' on read.
 	Hits int64     `json:"hits"`       // Copied from 'hits' on read.
 
-	opts *Options
+	opts Options // prune/eviction settings (by value to avoid heap alloc per Save).
 	hits atomic.Int64
 	last atomic.Int64 // unix nano time.
 }
@@ -270,12 +270,7 @@ func (c *Cache) List() map[string]*Item {
 
 	out := make(map[string]*Item)
 
-	c.shardPools.Range(func(_, value any) bool {
-		shard, ok := value.(*shard)
-		if !ok {
-			panic("cache: internal error: bad shard type in pool")
-		}
-
+	for _, shard := range c.shards {
 		shard.mu.RLock()
 
 		for key, item := range shard.items {
@@ -283,9 +278,7 @@ func (c *Cache) List() map[string]*Item {
 		}
 
 		shard.mu.RUnlock()
-
-		return true
-	})
+	}
 
 	return out
 }

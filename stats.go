@@ -33,12 +33,7 @@ func (c *Cache) Stats() *Stats {
 
 	var total Stats
 
-	c.shardPools.Range(func(_, value any) bool {
-		shard, ok := value.(*shard)
-		if !ok {
-			panic("cache: internal error: bad shard type in pool")
-		}
-
+	for _, shard := range c.shards {
 		total.Hits += shard.hits.Load()
 		total.Misses += shard.misses.Load()
 		total.Saves += shard.saves.Load()
@@ -50,9 +45,7 @@ func (c *Cache) Stats() *Stats {
 		shard.mu.RLock()
 		total.Size += int64(len(shard.items))
 		shard.mu.RUnlock()
-
-		return true
-	})
+	}
 
 	total.Prunes = c.pruneRuns.Load()
 	total.Pruning.Duration = time.Duration(c.pruningNanos.Load()) //nolint:gosec // nanoseconds from time.Since.

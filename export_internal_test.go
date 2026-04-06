@@ -17,8 +17,7 @@ func (c *Cache) AddTestItem(key string, lastAccess time.Time, opts Options) {
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 
-	optsCopy := opts
-	it := &Item{Data: "test", Time: lastAccess, Last: lastAccess, opts: &optsCopy}
+	it := &Item{Data: "test", Time: lastAccess, Last: lastAccess, opts: opts}
 	it.last.Store(lastAccess.UnixNano())
 	it.hits.Store(0)
 
@@ -41,18 +40,12 @@ func (c *Cache) HasKey(key string) bool {
 func (c *Cache) RunPrune(from time.Time) {
 	pruneStart := time.Now()
 
-	c.shardPools.Range(func(_, value any) bool {
-		shard, ok := value.(*shard)
-		if !ok {
-			panic("cache: internal error: bad shard type in pool")
-		}
-
+	for _, shard := range c.shards {
 		shard.mu.Lock()
 		shard.prune(&from, c.conf)
 		shard.mu.Unlock()
+	}
 
-		return true
-	})
 	c.pruneRuns.Add(1)
 	// One nanosecond to avoid 0 duration when the prune pass is extremely fast and causes tests to fail on Windows.
 	c.pruningNanos.Add(uint64(time.Since(pruneStart) + 1)) //nolint:gosec // duration is non-negative and bounded.
@@ -62,16 +55,9 @@ func (c *Cache) RunPrune(from time.Time) {
 func (c *Cache) PruneCounts() (int64, int64) {
 	var pruned int64
 
-	c.shardPools.Range(func(_, value any) bool {
-		shard, ok := value.(*shard)
-		if !ok {
-			panic("cache: internal error: bad shard type in pool")
-		}
-
+	for _, shard := range c.shards {
 		pruned += shard.pruned.Load()
-
-		return true
-	})
+	}
 
 	return c.pruneRuns.Load(), pruned
 }
