@@ -14,6 +14,12 @@ import (
 // originalData is used by several tests that save and retrieve the same string.
 const originalData = "original"
 
+// testHello is a shared payload for Get/GetInto/GetRaw tests (goconst).
+const testHello = "hello"
+
+// testUpdatedValue is used by Update tests (goconst).
+const testUpdatedValue = "new"
+
 // assertEqual is a tiny typed helper to avoid a testify dependency.
 func assertEqual[T comparable](t *testing.T, name string, want, got T) {
 	t.Helper()
@@ -301,15 +307,15 @@ func TestGet(t *testing.T) {
 		t.Fatalf("Get miss: expected nil, got %+v", got)
 	}
 
-	store.Save("k", "hello", cache.Options{})
+	store.Save("k", testHello, cache.Options{})
 
 	item := store.Get("k")
 	if item == nil {
 		t.Fatal("Get hit: expected item, got nil")
 	}
 
-	if item.Data != "hello" {
-		t.Fatalf("Get hit: expected 'hello', got %v", item.Data)
+	if item.Data != testHello {
+		t.Fatalf("Get hit: expected %q, got %v", testHello, item.Data)
 	}
 
 	if item.Hits != 1 {
@@ -319,6 +325,104 @@ func TestGet(t *testing.T) {
 	item2 := store.Get("k")
 	if item2.Hits != 2 {
 		t.Fatalf("Get hit #2: expected Hits=2, got %d", item2.Hits)
+	}
+}
+
+func TestGetInto(t *testing.T) {
+	t.Parallel()
+
+	store := cache.New(cache.Config{})
+	defer store.Stop(true)
+
+	var dst cache.Item
+	dst.Data = "should-not-appear-on-miss"
+
+	if store.GetInto("missing", &dst) {
+		t.Fatal("GetInto miss: expected false")
+	}
+
+	if dst.Data != "should-not-appear-on-miss" {
+		t.Fatalf("GetInto miss: expected dst unchanged, got Data=%v", dst.Data)
+	}
+
+	store.Save("k", testHello, cache.Options{})
+
+	if !store.GetInto("k", &dst) {
+		t.Fatal("GetInto hit: expected true")
+	}
+
+	if dst.Data != testHello || dst.Hits != 1 {
+		t.Fatalf("GetInto hit: got Data=%v Hits=%d", dst.Data, dst.Hits)
+	}
+
+	if !store.GetInto("k", &dst) || dst.Hits != 2 {
+		t.Fatalf("GetInto hit #2: expected Hits=2, got Hits=%d Data=%v", dst.Hits, dst.Data)
+	}
+
+	// Same stats as Get for the same operations.
+	stats := store.Stats()
+	assertEqual(t, "Hits", int64(2), stats.Hits)
+	assertEqual(t, "Misses", int64(1), stats.Misses)
+}
+
+func TestGetInto_nilPanics(t *testing.T) {
+	t.Parallel()
+
+	store := cache.New(cache.Config{})
+	defer store.Stop(true)
+
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic for nil *Item")
+		}
+	}()
+
+	store.GetInto("k", nil)
+}
+
+func TestGetRaw(t *testing.T) {
+	t.Parallel()
+
+	store := cache.New(cache.Config{})
+	defer store.Stop(true)
+
+	if _, ok := store.GetRaw("missing"); ok {
+		t.Fatal("GetRaw miss: expected ok false")
+	}
+
+	store.Save("k", testHello, cache.Options{})
+
+	raw, ok := store.GetRaw("k")
+	if !ok {
+		t.Fatal("GetRaw hit: expected ok true")
+	}
+
+	if raw != testHello {
+		t.Fatalf("GetRaw: want %q, got %v", testHello, raw)
+	}
+
+	raw2, ok2 := store.GetRaw("k")
+	if !ok2 || raw2 != raw {
+		t.Fatalf("GetRaw 2nd hit: want same value and ok, got %v %v", raw2, ok2)
+	}
+
+	stats := store.Stats()
+	assertEqual(t, "Hits", int64(2), stats.Hits)
+
+	snap := store.Get("k")
+	if snap == nil || snap.Hits != 3 {
+		t.Fatalf("after 2x GetRaw + Get expected Hits=3 on snapshot, got %+v", snap)
+	}
+
+	store.Save("nilval", nil, cache.Options{})
+
+	gotNil, okNil := store.GetRaw("nilval")
+	if !okNil {
+		t.Fatal("GetRaw stored nil: expected ok true")
+	}
+
+	if gotNil != nil {
+		t.Fatalf("GetRaw stored nil: want nil Data, got %v", gotNil)
 	}
 }
 
@@ -369,7 +473,7 @@ func TestUpdate_NewKey(t *testing.T) {
 	store := cache.New(cache.Config{})
 	defer store.Stop(true)
 
-	prev := store.Update("k", "new", cache.Options{})
+	prev := store.Update("k", testUpdatedValue, cache.Options{})
 	if prev != nil {
 		t.Fatalf("Update new key: expected nil, got %+v", prev)
 	}
@@ -386,7 +490,7 @@ func TestUpdate_ExistingKey(t *testing.T) {
 
 	store.Save("k", originalData, cache.Options{})
 
-	prev := store.Update("k", "new", cache.Options{})
+	prev := store.Update("k", testUpdatedValue, cache.Options{})
 	if prev == nil {
 		t.Fatal("Update existing key: expected previous item, got nil")
 	}
@@ -401,8 +505,8 @@ func TestUpdate_ExistingKey(t *testing.T) {
 	assertEqual(t, "Hits", int64(1), stats.Hits)
 
 	item := store.Get("k")
-	if item == nil || item.Data != "new" {
-		t.Fatalf("after Update expected 'new', got %v", item)
+	if item == nil || item.Data != testUpdatedValue {
+		t.Fatalf("after Update expected %q, got %v", testUpdatedValue, item)
 	}
 }
 

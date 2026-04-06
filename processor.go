@@ -82,12 +82,23 @@ func (c *Cache) backgroundLoop(ctx context.Context) {
 }
 
 // copy an item so it can be returned to the caller.
+// If dst is nil, a new Item is allocated and returned.
+// Otherwise, the fields are copied into the existing Item.
 // Do not call this with a nil Item.
-func (i *Item) copy() *Item {
-	return &Item{
-		Data: i.Data,
-		Time: i.Time,
-		Last: time.Unix(0, i.last.Load()),
-		Hits: i.hits.Load(),
+func (src *Item) copy(dst *Item) *Item {
+	if dst == nil {
+		return &Item{
+			Data: src.Data,
+			Time: src.Time,
+			Last: time.Unix(0, src.last.Load()),
+			Hits: src.hits.Load(),
+		}
 	}
+
+	dst.Data = src.Data
+	dst.Time = src.Time
+	dst.Last = time.Unix(0, src.last.Load())
+	dst.Hits = src.hits.Load()
+
+	return dst
 }
