@@ -203,6 +203,7 @@ func (c *Cache) Get(requestKey string) *Item {
 	c.areWeRunning()
 
 	shardInst := c.shardFor(requestKey)
+
 	shardInst.mu.RLock()
 	defer shardInst.mu.RUnlock()
 

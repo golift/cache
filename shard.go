@@ -37,29 +37,26 @@ func (sh *shard) get(key string, now time.Time) *Item {
 
 // save stores an item. Caller must hold sh.mu (write lock).
 func (sh *shard) save(key string, data any, opts Options, now time.Time, replace bool) *Item {
-	var prev *Item
+	var item *Item
 
 	if replace {
-		prev = sh.get(key, now) // Apply stats to this Update() request.
+		item = sh.get(key, now) // Apply stats to this Update() request.
 	} else {
-		prev = sh.items[key] // Avoid hit/miss stats on regular Save().
+		item = sh.items[key] // Avoid hit/miss stats on regular Save().
 	}
 
-	if prev != nil {
+	if item != nil {
 		sh.updates.Add(1)
 	} else {
 		sh.saves.Add(1)
 	}
 
 	optsCopy := opts
-	newItem := &Item{Data: data, Time: now, Last: now, opts: &optsCopy}
-	newItem.last.Store(now.UnixNano())
-	newItem.hits.Store(0)
-
-	sh.items[key] = newItem
-
+	sh.items[key] = &Item{Data: data, Time: now, Last: now, opts: &optsCopy}
+	sh.items[key].last.Store(now.UnixNano())
+	sh.items[key].hits.Store(0)
 	// replace=true (Update): prev is a snapshot from get. replace=false: prev is the prior *Item if any (not copied).
-	return prev
+	return item
 }
 
 // delete removes a key. Caller must hold sh.mu (write lock).
@@ -67,7 +64,6 @@ func (sh *shard) delete(key string) *Item {
 	item := sh.items[key]
 	if item == nil {
 		sh.delmiss.Add(1)
-
 		return nil
 	}
 
@@ -75,8 +71,8 @@ func (sh *shard) delete(key string) *Item {
 
 	sh.deletes.Add(1)
 	delete(sh.items, key)
-
-	return item // not copied.
+	// item is not copied, and no longer in cache.
+	return item
 }
 
 // prune removes eligible keys. Caller must hold sh.mu (write lock).

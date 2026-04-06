@@ -73,15 +73,13 @@ func TestConcurrentGetSameKey(t *testing.T) {
 	const concurrentGets = 500
 
 	var waitGroup sync.WaitGroup
-
 	waitGroup.Add(concurrentGets)
 
 	for range concurrentGets {
 		go func() {
 			defer waitGroup.Done()
 
-			item := store.Get(key)
-			if item == nil || item.Data != "v" {
+			if item := store.Get(key); item == nil || item.Data != "v" {
 				t.Error("expected cache hit with saved data")
 			}
 		}()
@@ -108,15 +106,13 @@ func TestConcurrentGetSameKey_Sharded(t *testing.T) {
 	const concurrentGets = 500
 
 	var waitGroup sync.WaitGroup
-
 	waitGroup.Add(concurrentGets)
 
 	for range concurrentGets {
 		go func() {
 			defer waitGroup.Done()
 
-			item := store.Get(key)
-			if item == nil || item.Data != "v" {
+			if item := store.Get(key); item == nil || item.Data != "v" {
 				t.Error("expected cache hit with saved data")
 			}
 		}()
