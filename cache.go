@@ -202,12 +202,12 @@ func (c *Cache) Stop(clean bool) {
 func (c *Cache) Get(requestKey string) *Item {
 	c.areWeRunning()
 
-	shardInst := c.shardFor(requestKey)
+	shard := c.shardFor(requestKey)
 
-	shardInst.mu.RLock()
-	defer shardInst.mu.RUnlock()
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
 
-	return shardInst.get(requestKey, c.cachedNow())
+	return shard.get(requestKey, c.cachedNow())
 }
 
 // Save saves an item, and returns true if it already existed (got updated).
@@ -218,11 +218,11 @@ func (c *Cache) Save(requestKey string, data any, opts Options) bool {
 
 	now := c.cachedNow()
 
-	shardInst := c.shardFor(requestKey)
-	shardInst.mu.Lock()
-	defer shardInst.mu.Unlock()
+	shard := c.shardFor(requestKey)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
-	return shardInst.save(requestKey, data, opts, now, false) != nil
+	return shard.save(requestKey, data, opts, now, false) != nil
 }
 
 // Update saves an item, and returns a copy of the previously saved item.
@@ -235,11 +235,11 @@ func (c *Cache) Update(requestKey string, data any, opts Options) *Item {
 
 	now := c.cachedNow()
 
-	shardInst := c.shardFor(requestKey)
-	shardInst.mu.Lock()
-	defer shardInst.mu.Unlock()
+	shard := c.shardFor(requestKey)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
-	return shardInst.save(requestKey, data, opts, now, true)
+	return shard.save(requestKey, data, opts, now, true)
 }
 
 // Delete removes an item and returns true if it existed.
@@ -247,11 +247,11 @@ func (c *Cache) Update(requestKey string, data any, opts Options) *Item {
 func (c *Cache) Delete(requestKey string) bool {
 	c.areWeRunning()
 
-	shardInst := c.shardFor(requestKey)
-	shardInst.mu.Lock()
-	defer shardInst.mu.Unlock()
+	shard := c.shardFor(requestKey)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
-	return shardInst.delete(requestKey) != nil
+	return shard.delete(requestKey) != nil
 }
 
 // List returns a copy of the in-memory cache. The map list will never be nil.
@@ -271,18 +271,18 @@ func (c *Cache) List() map[string]*Item {
 	out := make(map[string]*Item)
 
 	c.shardPools.Range(func(_, value any) bool {
-		shardInst, ok := value.(*shard)
+		shard, ok := value.(*shard)
 		if !ok {
 			panic("cache: internal error: bad shard type in pool")
 		}
 
-		shardInst.mu.RLock()
+		shard.mu.RLock()
 
-		for key, item := range shardInst.items {
+		for key, item := range shard.items {
 			out[key] = item.copy()
 		}
 
-		shardInst.mu.RUnlock()
+		shard.mu.RUnlock()
 
 		return true
 	})

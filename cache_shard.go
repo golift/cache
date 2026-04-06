@@ -86,12 +86,12 @@ func (c *Cache) shardFor(key string) *shard {
 	}
 
 	// sync.Map returns interface{}; assert to *shard (only type we ever Store).
-	shardInst, ok := value.(*shard)
+	shard, ok := value.(*shard)
 	if !ok {
 		panic("cache: internal error: bad shard type")
 	}
 
-	return shardInst
+	return shard
 }
 
 // clean clears all items in all shards. Caller must hold c.mu (write lock).
