@@ -21,14 +21,14 @@ type shard struct {
 }
 
 // get returns a copy of an item. Caller must hold sh.mu for reading (RLock) or writing (Lock).
-func (sh *shard) get(key string, now time.Time) *Item {
-	item := sh.items[key]
+func (s *shard) get(key string, now time.Time) *Item {
+	item := s.items[key]
 	if item == nil {
-		sh.misses.Add(1)
+		s.misses.Add(1)
 		return nil
 	}
 
-	sh.hits.Add(1)
+	s.hits.Add(1)
 	item.hits.Add(1)
 	item.last.Store(now.UnixNano())
 
@@ -36,67 +36,67 @@ func (sh *shard) get(key string, now time.Time) *Item {
 }
 
 // save stores an item. Caller must hold sh.mu (write lock).
-func (sh *shard) save(key string, data any, opts Options, now time.Time, replace bool) *Item {
+func (s *shard) save(key string, data any, opts Options, now time.Time, replace bool) *Item {
 	var item *Item
 
 	if replace {
-		item = sh.get(key, now) // Apply stats to this Update() request.
+		item = s.get(key, now) // Apply stats to this Update() request.
 	} else {
-		item = sh.items[key] // Avoid hit/miss stats on regular Save().
+		item = s.items[key] // Avoid hit/miss stats on regular Save().
 	}
 
 	if item != nil {
-		sh.updates.Add(1)
+		s.updates.Add(1)
 	} else {
-		sh.saves.Add(1)
+		s.saves.Add(1)
 	}
 
 	optsCopy := opts
 	// Create a new item and return the old/previously stored item directly.
-	sh.items[key] = &Item{Data: data, Time: now, Last: now, opts: &optsCopy}
-	sh.items[key].last.Store(now.UnixNano())
-	sh.items[key].hits.Store(0)
+	s.items[key] = &Item{Data: data, Time: now, Last: now, opts: &optsCopy}
+	s.items[key].last.Store(now.UnixNano())
+	s.items[key].hits.Store(0)
 	// replace=true (Update): item is a snapshot from get. replace=false: item is the prior *Item if any (not copied).
 	return item
 }
 
 // delete removes a key. Caller must hold sh.mu (write lock).
-func (sh *shard) delete(key string) *Item {
-	item := sh.items[key]
+func (s *shard) delete(key string) *Item {
+	item := s.items[key]
 	if item == nil {
-		sh.delmiss.Add(1)
+		s.delmiss.Add(1)
 		return nil
 	}
 
 	item.opts = nil
 
-	sh.deletes.Add(1)
-	delete(sh.items, key)
+	s.deletes.Add(1)
+	delete(s.items, key)
 	// item is not copied, and no longer in cache.
 	return item
 }
 
 // prune removes eligible keys. Caller must hold sh.mu (write lock).
-func (sh *shard) prune(from *time.Time, conf *Config) {
-	for key, item := range sh.items {
+func (s *shard) prune(from *time.Time, conf *Config) {
+	for key, item := range s.items {
 		lastTime := time.Unix(0, item.last.Load())
 		if last := from.Sub(lastTime); last > conf.MaxUnused ||
 			(item.opts.Prune && last > conf.PruneAfter) ||
 			(!item.opts.Expire.IsZero() && from.After(item.opts.Expire)) {
-			sh.pruned.Add(1)
-			delete(sh.items, key)
+			s.pruned.Add(1)
+			delete(s.items, key)
 		}
 	}
 }
 
 // clean clears all items in this shard. Caller must hold sh.mu (write lock).
-func (sh *shard) clean() {
-	for k := range sh.items {
-		sh.items[k].opts = nil
-		sh.items[k].Data = nil
-		sh.items[k] = nil
-		delete(sh.items, k)
+func (s *shard) clean() {
+	for k := range s.items {
+		s.items[k].opts = nil
+		s.items[k].Data = nil
+		s.items[k] = nil
+		delete(s.items, k)
 	}
 
-	sh.items = nil
+	s.items = nil
 }

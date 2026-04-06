@@ -13,26 +13,26 @@ func NewTestCache(conf Config) *Cache {
 // AddTestItem inserts an item directly into the cache map so tests can set
 // an arbitrary Last timestamp.
 func (c *Cache) AddTestItem(key string, lastAccess time.Time, opts Options) {
-	shardInst := c.shardFor(key)
-	shardInst.mu.Lock()
-	defer shardInst.mu.Unlock()
+	shard := c.shardFor(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
 	optsCopy := opts
 	it := &Item{Data: "test", Time: lastAccess, Last: lastAccess, opts: &optsCopy}
 	it.last.Store(lastAccess.UnixNano())
 	it.hits.Store(0)
 
-	shardInst.items[key] = it
+	shard.items[key] = it
 }
 
 // HasKey reports whether a key currently exists in the cache map.
 func (c *Cache) HasKey(key string) bool {
-	shardInst := c.shardFor(key)
+	shard := c.shardFor(key)
 
-	shardInst.mu.RLock()
-	defer shardInst.mu.RUnlock()
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
 
-	_, ok := shardInst.items[key]
+	_, ok := shard.items[key]
 
 	return ok
 }
