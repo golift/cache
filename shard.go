@@ -32,7 +32,38 @@ func (s *shard) get(key string, now time.Time) *Item {
 	item.hits.Add(1)
 	item.last.Store(now.UnixNano())
 
-	return item.copy()
+	return item.copy(nil) // nil means makes new *Item's.
+}
+
+// getInto records a hit and fills dst with a snapshot of the item. Caller must hold s.mu for reading.
+func (s *shard) getInto(key string, now time.Time, dst *Item) bool {
+	item := s.items[key]
+	if item == nil {
+		s.misses.Add(1)
+		return false
+	}
+
+	s.hits.Add(1)
+	item.hits.Add(1)
+	item.last.Store(now.UnixNano())
+	item.copy(dst) // copy the cached item into the caller's *Item.
+
+	return true
+}
+
+// getRaw records a hit and returns the stored Data for the key. Caller must hold s.mu for reading.
+func (s *shard) getRaw(key string, now time.Time) (any, bool) {
+	item := s.items[key]
+	if item == nil {
+		s.misses.Add(1)
+		return nil, false
+	}
+
+	s.hits.Add(1)
+	item.hits.Add(1)
+	item.last.Store(now.UnixNano())
+
+	return item.Data, true
 }
 
 func placeItem(item *Item, data any, opts Options, now time.Time) *Item {
@@ -63,7 +94,7 @@ func (s *shard) save(key string, data any, opts Options, now time.Time, replace 
 		s.hits.Add(1)
 		item.hits.Add(1)
 		item.last.Store(now.UnixNano())
-		out := item.copy() // get stats before updating the item.
+		out := item.copy(nil) // get stats before updating the item. nil means makes new *Item
 		placeItem(item, data, opts, now)
 
 		return out

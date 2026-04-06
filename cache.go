@@ -69,6 +69,7 @@ type Cache struct {
 //
 // Items held inside the cache use atomics for Hits/last access so Get can use a read lock;
 // values returned from Get and List are snapshots with plain fields.
+// GetInto copies those snapshot fields into caller memory.
 type Item struct {
 	Data any       `json:"data"`
 	Time time.Time `json:"created"`
@@ -210,6 +211,50 @@ func (c *Cache) Get(requestKey string) *Item {
 	return shard.get(requestKey, c.cachedNow())
 }
 
+// GetInto fills dst with the same snapshot fields that Get would return (Data, Time, Last, Hits).
+// It returns false if the key is missing and does not modify dst in that case.
+// It panics if dst is nil.
+//
+// Reuse dst across calls to avoid allocating a new *Item on each hit. Data is still the same
+// shallow reference as in the cache; do not mutate it in place if other goroutines may read
+// the cached value.
+//
+// Calling this procedure after calling Stop() or cancelling the context produces a panic.
+func (c *Cache) GetInto(requestKey string, dst *Item) bool {
+	if dst == nil {
+		panic("cache: GetInto with nil *Item")
+	}
+
+	c.areWeRunning()
+
+	shard := c.shardFor(requestKey)
+
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
+
+	return shard.getInto(requestKey, c.cachedNow(), dst)
+}
+
+// GetRaw returns the stored value (Item.Data) for the key. The second result is false if the key
+// is missing. If the key exists and Data is nil, it returns (nil, true).
+// It updates hit/miss statistics the same way as Get.
+//
+// The returned value is the same reference held in the cache; after this method returns, other
+// goroutines may replace or remove the entry or mutate mutable values pointed to by Data.
+// For a detached copy use Get; to fill caller-owned memory without allocating a new *Item use GetInto.
+//
+// Calling this procedure after calling Stop() or cancelling the context produces a panic.
+func (c *Cache) GetRaw(requestKey string) (any, bool) {
+	c.areWeRunning()
+
+	shard := c.shardFor(requestKey)
+
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
+
+	return shard.getRaw(requestKey, c.cachedNow())
+}
+
 // Save saves an item, and returns true if it already existed (got updated).
 // This procedure does NOT update hit/miss stats like cache.Get() does.
 // Calling this procedure after calling Stop() or cancelling the context produces a panic.
@@ -274,7 +319,7 @@ func (c *Cache) List() map[string]*Item {
 		shard.mu.RLock()
 
 		for key, item := range shard.items {
-			out[key] = item.copy()
+			out[key] = item.copy(nil) // nil means makes new *Items's.
 		}
 
 		shard.mu.RUnlock()
