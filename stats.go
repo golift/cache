@@ -46,7 +46,10 @@ func (c *Cache) Stats() *Stats {
 		total.Deletes += shard.deletes.Load()
 		total.DelMiss += shard.delmiss.Load()
 		total.Pruned += shard.pruned.Load()
+
+		shard.mu.RLock()
 		total.Size += int64(len(shard.items))
+		shard.mu.RUnlock()
 
 		return true
 	})
