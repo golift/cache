@@ -2,7 +2,9 @@ version: '2'
 linters:
   default: all
   disable:
-    - exhaustruct
+    - exhaustruct # deprecated.
+    - exhaustruct_v5 # zero values are the config: callers set the fields they use.
+    - gomodguard # deprecated.
     - nlreturn
     - depguard
     - wsl
