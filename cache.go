@@ -177,7 +177,7 @@ func (c *Cache) StartWithContext(ctx context.Context, clean bool) {
 
 // Stop stops the cache processor.
 // If clean is true it will clean up memory usage and delete the cache.
-// Pass clean if the app will continue to run, and you don't need to re-use the cache data.
+// Pass clean if the app will continue to run, and you don't need to reuse the cache data.
 func (c *Cache) Stop(clean bool) {
 	c.stopMu.Lock() // serializes Start/Stop (avoids races with wg.Add/Wait).
 	if !c.running.Load() {
